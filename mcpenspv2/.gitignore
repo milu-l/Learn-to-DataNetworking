@@ -1,0 +1,9 @@
+__pycache__/
+_cache/
+uploads/
+*.pyc
+*.pyo
+topo_cache.json
+topo_data.json
+.vscode/
+*.code-workspace

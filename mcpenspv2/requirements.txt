@@ -1,0 +1,4 @@
+flask>=2.3.0
+flask-cors>=4.0.0
+telnetlib3>=1.0.0
+fastmcp>=4.1.8,<5

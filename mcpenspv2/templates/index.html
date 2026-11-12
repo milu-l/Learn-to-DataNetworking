@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>eNSP Telnet Manager</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-left">
+                <span class="logo-icon">&#9608;</span>
+                <h1>eNSP Telnet Manager</h1>
+            </div>
+            <div class="header-right">
+                <span class="status-dot" id="mcpStatusDot"></span>
+                <span class="mcp-label">MCP</span>
+                <span class="mcp-status" id="mcpStatusText">检测中</span>
+            </div>
+        </header>
+
+        <main class="main">
+            <aside class="sidebar">
+                <div class="panel scan-panel">
+                    <div class="panel-header">
+                        <span class="panel-icon">&#9654;</span>
+                        <h2>端口扫描</h2>
+                    </div>
+                    <div class="panel-body">
+                        <div class="form-group">
+                            <label>目标 IP</label>
+                            <input type="text" id="scanIp" value="127.0.0.1" placeholder="192.168.1.1">
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>起始端口</label>
+                                <input type="number" id="scanStart" value="2000" min="1" max="65535">
+                            </div>
+                            <div class="form-group">
+                                <label>结束端口</label>
+                                <input type="number" id="scanEnd" value="2099" min="1" max="65535">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>超时 (秒)</label>
+                            <input type="number" id="scanTimeout" value="2" min="1" max="10">
+                        </div>
+                        <button class="btn btn-scan" id="btnScan" onclick="startScan()">
+                            <span class="btn-icon">&#9654;</span> 开始扫描
+                        </button>
+                        <div class="progress-bar" id="progressBar" style="display:none;">
+                            <div class="progress-fill" id="progressFill"></div>
+                        </div>
+                        <div class="scan-info" id="scanInfo"></div>
+                    </div>
+                </div>
+
+                <div class="panel device-panel">
+                    <div class="panel-header">
+                        <span class="panel-icon">&#9679;</span>
+                        <h2>设备列表</h2>
+                        <span class="device-count" id="deviceCount">0</span>
+                    </div>
+                    <div class="panel-body" id="deviceList">
+                        <div class="empty-state">等待扫描...</div>
+                    </div>
+                </div>
+
+                <div class="panel history-panel">
+                    <div class="panel-header">
+                        <span class="panel-icon">&#8635;</span>
+                        <h2>扫描历史</h2>
+                        <button type="button" class="panel-clear" onclick="clearScanHistory()">清空</button>
+                    </div>
+                    <div class="panel-body" id="historyList">
+                        <div class="empty-state">暂无历史记录</div>
+                    </div>
+                </div>
+
+                <div class="panel topo-panel">
+                    <div class="panel-header">
+                        <span class="panel-icon">&#9678;</span>
+                        <h2>拓扑分析</h2>
+                        <span class="topo-status" id="topoStatus">未加载</span>
+                        <button type="button" class="panel-clear" id="clearTopologyButton" onclick="clearTopology()" hidden>删除</button>
+                    </div>
+                    <div class="panel-body">
+                        <div class="topo-upload-area" id="topoUploadArea">
+                            <label class="topo-upload-btn" for="topoFileInput">
+                                <span class="btn-icon">&#8682;</span> 上传拓扑文件
+                            </label>
+                            <input type="file" id="topoFileInput" accept=".txt,.topo,.xml,.vbox" onchange="handleTopoUpload(event)" style="display:none">
+                            <div class="topo-hint">支持 eNSP 导出的 .txt / .topo 文件</div>
+                        </div>
+                        <div class="topo-info" id="topoInfo" style="display:none">
+                            <div class="topo-filename" id="topoFilename"></div>
+                            <div class="topo-stats" id="topoStats"></div>
+                        </div>
+                        <div class="topo-actions" id="topoActions" style="display:none">
+                            <button class="btn btn-topo-analyze" onclick="analyzeTopo('markdown')">完整报告</button>
+                            <button class="btn btn-topo-analyze" onclick="analyzeTopo('summary')">文本摘要</button>
+                            <button class="btn btn-topo-analyze" onclick="analyzeTopo('mermaid')">Mermaid图</button>
+                        </div>
+                        <div class="topo-output" id="topoOutput" style="display:none">
+                            <pre id="topoOutputContent"></pre>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <section class="terminal-section">
+                <nav class="view-tabs" aria-label="工作区视图">
+                    <button type="button" id="terminalViewTab" class="view-tab active" aria-selected="true" onclick="switchWorkspaceView('terminal')">设备终端</button>
+                    <button type="button" id="topologyViewTab" class="view-tab" aria-selected="false" onclick="switchWorkspaceView('topology')">拓扑图</button>
+                </nav>
+                <div id="terminalView" class="workspace-view terminal-view">
+                <div class="terminal-header">
+                    <div class="terminal-tabs" id="terminalTabs"></div>
+                    <button class="btn btn-small" id="btnClear" onclick="clearActiveTerminal()" style="display:none">清屏</button>
+                </div>
+
+                <div class="terminal-content" id="terminalContent">
+                    <div class="terminal-welcome" id="terminalWelcome">
+                        <pre>
+  _____       _   _  ____  _____   _______    _           _
+ | ____|   _ | \ | ||  _ \|  __ \ |__   __|  | |         | |
+ |  _|| | | ||  \| || |_) | |__) |   | | ___ | | ___  ___| |_
+ | |__| |_| || |\  ||  __/|  ___/    | |/ _ \| |/ _ \/ __| __|
+ |_____\__,_||_| \_||_|   |_|        |_|\___/|_|\___/\___|\__|
+                        eNSP Telnet Manager v1.0
+
+ 输入 IP 和端口范围，点击"开始扫描"发现设备。
+ 在设备列表中点击"连接"建立 Telnet 会话。
+ 每个已连接的设备有独立的终端标签页。
+
+ 默认扫描范围: 2000-2099
+                        </pre>
+                    </div>
+                </div>
+                </div>
+                <div id="topologyView" class="workspace-view topology-view" hidden>
+                    <div class="graph-heading"><span>网络拓扑 <span id="graphStats"></span></span><div class="traffic-controls"><select id="trafficInterface" aria-label="抓包网卡"><option value="">选择抓包网卡</option></select><button type="button" id="trafficButton" onclick="toggleTraffic()">开始监控</button><span id="trafficStatus" aria-live="polite">未监控</span></div></div>
+                    <div class="graph-canvas">
+                        <svg id="topologyGraph" role="img" aria-label="网络拓扑图"></svg>
+                        <div id="graphEmpty" class="graph-empty">上传拓扑文件后显示设备与连线</div>
+                    </div>
+                    <section class="packet-panel" aria-label="数据包分析">
+                        <div class="packet-heading"><span>数据包分析 <small>最近 200 条 · 仅当前监控</small></span><div><select id="packetProtocol" aria-label="协议筛选" onchange="renderPackets()"><option value="">全部协议</option><option>ICMP</option><option>TCP</option><option>UDP</option><option>OSPF</option><option>ARP</option><option>IPv6</option><option>未知</option></select> <button type="button" onclick="clearPackets()">清空</button></div></div>
+                        <div class="packet-table-wrap"><table class="packet-table"><thead><tr><th>时间</th><th>拓扑链路</th><th>协议</th><th>源地址</th><th>目标地址</th><th>长度</th><th>详情</th></tr></thead><tbody id="packetRows"></tbody></table><div id="packetEmpty" class="packet-empty">开始监控后显示数据包</div></div>
+                    </section>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
