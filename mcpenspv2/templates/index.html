@@ -146,7 +146,9 @@
                         <div id="graphEmpty" class="graph-empty">上传拓扑文件后显示设备与连线</div>
                     </div>
                     <section class="packet-panel" aria-label="数据包分析">
-                        <div class="packet-heading"><span>数据包分析 <small>最近 200 条 · 仅当前监控</small></span><div><select id="packetProtocol" aria-label="协议筛选" onchange="renderPackets()"><option value="">全部协议</option><option>ICMP</option><option>TCP</option><option>UDP</option><option>OSPF</option><option>ARP</option><option>IPv6</option><option>未知</option></select> <button type="button" onclick="clearPackets()">清空</button></div></div>
+                        <div class="packet-heading"><span>数据包分析 <small>点击报文溯源 · 最近 200 条</small></span><div><select id="traceSpeed" aria-label="播放速度"><option value="4000">慢放 4 秒/跳</option><option value="2000">2 秒/跳</option><option value="8000">8 秒/跳</option></select> <button type="button" onclick="replayTrace()">重播</button> <button type="button" onclick="stopTrace()">停止</button> <select id="packetProtocol" aria-label="协议筛选" onchange="renderPackets()"><option value="">全部协议</option><option>ICMP</option><option>TCP</option><option>UDP</option><option>OSPF</option><option>ARP</option><option>IPv6</option><option>未知</option></select> <button type="button" onclick="clearPackets()">清空</button></div></div>
+                        <div id="traceStatus" class="trace-status" aria-live="polite">选择数据包查看捕获路径</div>
+                        <div id="packetAnalysis" class="packet-analysis" aria-live="polite">选择数据包查看自动分析结果；分析基于单个捕获报文，不代表完整连接状态。</div>
                         <div class="packet-table-wrap"><table class="packet-table"><thead><tr><th>时间</th><th>拓扑链路</th><th>协议</th><th>源地址</th><th>目标地址</th><th>长度</th><th>详情</th></tr></thead><tbody id="packetRows"></tbody></table><div id="packetEmpty" class="packet-empty">开始监控后显示数据包</div></div>
                     </section>
                 </div>

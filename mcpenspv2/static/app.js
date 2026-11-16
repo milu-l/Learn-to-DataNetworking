@@ -12,6 +12,9 @@ let trafficRunning = false;
 let trafficBusy = false;
 let packetData = [];
 let packetLinks = {};
+let traceEdges = {};
+let traceSelection = null;
+let traceAnimation = null;
 
 function loadHistory() {
     try {
@@ -519,8 +522,12 @@ function loadTopologyGraph() {
 }
 
 function resetTopologyDisplay() {
+    stopTrace();
+    traceSelection = null;
+    showPacketAnalysis(null);
     packetData = [];
     packetLinks = {};
+    traceEdges = {};
     renderPackets();
     state.topologyNames = {};
     renderDeviceList();
@@ -552,12 +559,14 @@ async function clearTopology() {
 }
 
 function renderTopologyGraph(data) {
+    stopTrace();
     var svg = document.getElementById("topologyGraph"), empty = document.getElementById("graphEmpty");
     var stats = document.getElementById("graphStats");
     svg.replaceChildren();
     var devices = Array.isArray(data.devices) ? data.devices : [];
     var links = Array.isArray(data.connections) ? data.connections : [];
     packetLinks = {};
+    traceEdges = {};
     var names = new Map(devices.map(function(device) { return [device.id, device.name]; }));
     links.forEach(function(link, index) {
         for (var i = 0; i < (Number(link.link_count) || 1); i++) {
@@ -596,6 +605,7 @@ function renderTopologyGraph(data) {
         for (var i = 0; i < n; i++) {
             var offset = (i - (n - 1) / 2) * 7, ox = -dy / length * offset, oy = dx / length * offset;
             var linkId = linkIndex + ":" + i;
+            traceEdges[linkId] = {source: link.source_id, target: link.target_id, x1: source.x + ox, y1: source.y + oy, x2: target.x + ox, y2: target.y + oy};
             svg.appendChild(make("line", { x1: source.x + ox, y1: source.y + oy, x2: target.x + ox, y2: target.y + oy, class: "graph-link", "data-link-id": linkId }));
             var label = make("text", { x: (source.x + target.x) / 2 + ox, y: (source.y + target.y) / 2 + oy - 5, class: "graph-traffic", "data-link-id": linkId });
             svg.appendChild(label);
@@ -642,6 +652,13 @@ async function toggleTraffic() {
         });
         var data = await response.json();
         if (!response.ok) throw new Error(data.error || '操作失败');
+        if (!trafficRunning) {
+            traceSelection = null;
+            packetData = [];
+            stopTrace();
+            showPacketAnalysis(null);
+            renderPackets();
+        }
         await refreshTrafficStatus();
     } catch (error) { document.getElementById('trafficStatus').textContent = error.message; }
     finally { trafficBusy = false; button.disabled = false; }
@@ -694,6 +711,8 @@ function renderPackets() {
     empty.textContent = packetData.length ? '没有符合条件的数据包' : '开始监控后显示数据包';
     packets.forEach(function(packet) {
         var row = document.createElement('tr');
+        if (traceSelection && packet.id === traceSelection.id) row.classList.add('trace-selected');
+        row.onclick = function() { traceSelection = packet; showPacketAnalysis(packet); renderPackets(); replayTrace(); };
         var date = new Date(Number(packet.timestamp) * 1000);
         var values = [Number.isFinite(date.getTime()) ? date.toLocaleTimeString() : '—', packetLinks[packet.link_id] || packet.link_id,
                       packet.protocol, packet.source || packet.source_mac || '—', packet.destination || packet.destination_mac || '—',
@@ -704,11 +723,86 @@ function renderPackets() {
     });
 }
 
+function showPacketAnalysis(packet) {
+    var panel = document.getElementById('packetAnalysis');
+    if (!packet) {
+        panel.textContent = '选择数据包查看自动分析结果；分析基于单个捕获报文，不代表完整连接状态。';
+        return;
+    }
+    var lines = ['自动分析 · ' + packet.protocol + ' · ' + (packetLinks[packet.link_id] || packet.link_id),
+        '内层帧 ' + (packet.inner_length != null ? packet.inner_length + ' B' : '未知') + '；外层捕获帧 ' + packet.frame_length + ' B'];
+    if (packet.source_mac || packet.destination_mac) lines.push('MAC：' + (packet.source_mac || '—') + ' → ' + (packet.destination_mac || '—'));
+    (packet.analysis || []).forEach(function(item) { lines.push('• ' + item); });
+    (packet.warnings || []).forEach(function(item) { lines.push('注意：' + item); });
+    if (!(packet.analysis || []).length && !(packet.warnings || []).length) lines.push('无可用的详细协议分析');
+    panel.textContent = lines.join('\n');
+}
+
+function stopTrace() {
+    if (traceAnimation !== null) cancelAnimationFrame(traceAnimation);
+    traceAnimation = null;
+    document.querySelectorAll('.trace-marker').forEach(function(el) { el.remove(); });
+    document.querySelectorAll('.graph-link.trace-active').forEach(function(el) { el.classList.remove('trace-active'); });
+}
+
+function replayTrace() {
+    stopTrace();
+    var status = document.getElementById('traceStatus');
+    if (!traceSelection || !traceEdges[traceSelection.link_id] || !traceSelection.sender_id) {
+        status.textContent = '请选择本次监控捕获的数据包';
+        return;
+    }
+    var selected = traceSelection;
+    var candidates = selected.trace_key ? packetData.filter(function(p) {
+        return p.trace_key === selected.trace_key && Math.abs(Number(p.timestamp) - Number(selected.timestamp)) <= 3 && traceEdges[p.link_id] && p.sender_id;
+    }).sort(function(a, b) { return Number(a.timestamp) - Number(b.timestamp) || a.id - b.id; }) : [selected];
+    var start = candidates.findIndex(function(p) { return p.id === selected.id; });
+    var hops = [selected], last = selected, seen = new Set([selected.link_id]);
+    for (var previous = start - 1; previous >= 0; previous--) {
+        var prior = candidates[previous], priorEdge = traceEdges[prior.link_id];
+        var priorDestination = prior.sender_id === priorEdge.source ? priorEdge.target : priorEdge.source;
+        if (priorDestination === last.sender_id && !seen.has(prior.link_id)) {
+            hops.unshift(prior); seen.add(prior.link_id); last = prior;
+        }
+    }
+    last = selected;
+    for (var i = start + 1; i < candidates.length; i++) {
+        var edge = traceEdges[last.link_id];
+        var destination = last.sender_id === edge.source ? edge.target : edge.source;
+        var next = candidates[i];
+        if (next.sender_id === destination && !seen.has(next.link_id)) {
+            hops.push(next); seen.add(next.link_id); last = next;
+        }
+    }
+    status.textContent = '捕获到 ' + hops.length + ' 跳；同指纹报文按时间和相邻设备推测关联，可能存在重传或缺失';
+    var svg = document.getElementById('topologyGraph'), duration = Number(document.getElementById('traceSpeed').value) || 4000;
+    var marker = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    marker.setAttribute('r', '6'); marker.setAttribute('class', 'trace-marker'); svg.appendChild(marker);
+    var started = null;
+    function frame(now) {
+        if (started === null) started = now;
+        var step = Math.floor((now - started) / duration);
+        if (step >= hops.length) { stopTrace(); return; }
+        var hop = hops[step], edge = traceEdges[hop.link_id];
+        if (!edge) { stopTrace(); return; }
+        var forward = hop.sender_id === edge.source, progress = ((now - started) % duration) / duration;
+        var x1 = forward ? edge.x1 : edge.x2, y1 = forward ? edge.y1 : edge.y2;
+        var x2 = forward ? edge.x2 : edge.x1, y2 = forward ? edge.y2 : edge.y1;
+        marker.setAttribute('cx', x1 + (x2 - x1) * progress); marker.setAttribute('cy', y1 + (y2 - y1) * progress);
+        document.querySelectorAll('.graph-link').forEach(function(line) { line.classList.toggle('trace-active', line.getAttribute('data-link-id') === hop.link_id); });
+        traceAnimation = requestAnimationFrame(frame);
+    }
+    traceAnimation = requestAnimationFrame(frame);
+}
+
 async function clearPackets() {
     try {
         var response = await fetch('/api/traffic/packets', {method: 'DELETE'});
         if (!response.ok) throw new Error('清空失败');
         packetData = [];
+        traceSelection = null;
+        stopTrace();
+        showPacketAnalysis(null);
         renderPackets();
     } catch (error) { alert('清空数据包失败：' + error.message); }
 }

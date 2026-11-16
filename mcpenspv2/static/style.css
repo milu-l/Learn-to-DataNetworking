@@ -488,6 +488,12 @@ input[type="number"]::-webkit-outer-spin-button {
 .packet-table td { color: var(--text-primary); }
 .packet-empty { padding: 16px; text-align: center; color: var(--text-secondary); font-size: 12px; }
 .packet-empty[hidden] { display: none; }
+.packet-table tbody tr { cursor: pointer; }
+.packet-table tbody tr:hover, .packet-table tbody tr.trace-selected { background: var(--blue-dim); }
+.trace-status { padding: 5px 12px; color: var(--text-secondary); font-size: 11px; }
+.packet-analysis { padding: 6px 12px; border-bottom: 1px solid var(--border); color: var(--text-primary); font-size: 11px; line-height: 1.5; white-space: pre-wrap; max-height: 90px; overflow-y: auto; }
+.trace-marker { fill: var(--accent-amber); stroke: white; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; }
+.graph-link.trace-active { stroke: var(--accent-amber); stroke-width: 4; }
 
 .terminal-header {
     display: flex;
