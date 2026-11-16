@@ -498,7 +498,7 @@ body.resizing-chat { cursor: col-resize; user-select: none; }
 .chat-settings { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--border-active); border-radius: 5px; max-height: 42%; overflow-y: auto; }
 .chat-settings[hidden] { display: none; }
 .chat-settings label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-secondary); }
-.chat-settings input:not([type=checkbox]) { width: 100%; color: var(--text-primary); background: var(--bg-input); border: 1px solid var(--border-active); border-radius: 4px; padding: 6px; }
+.chat-settings input:not([type=checkbox]), .chat-settings select { width: 100%; color: var(--text-primary); background: var(--bg-input); border: 1px solid var(--border-active); border-radius: 4px; padding: 6px; }
 .chat-settings label.chat-clear-key { flex-direction: row; align-items: center; }
 .chat-settings-footer { display: flex; align-items: center; gap: 8px; }
 .chat-settings-footer span, .chat-settings small { color: var(--text-secondary); font-size: 11px; }
@@ -522,9 +522,34 @@ body.resizing-chat { cursor: col-resize; user-select: none; }
 }
 .chat-form button, .chat-approval button { color: var(--text-primary); background: var(--bg-elevated); border: 1px solid var(--border-active); border-radius: 4px; padding: 8px 14px; cursor: pointer; }
 .topology-view { padding: 16px; }
-.graph-heading { display: flex; justify-content: space-between; gap: 12px; padding: 12px 14px; color: var(--text-secondary); background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px 6px 0 0; font-size: 12px; }
-.graph-canvas { flex: 1; min-height: 0; position: relative; overflow: hidden; border: 1px solid var(--border); border-top: 0; border-radius: 0 0 6px 6px; background-color: var(--bg-input); background-image: radial-gradient(var(--border-active) 1px, transparent 1px); background-size: 20px 20px; }
-.graph-canvas svg { width: 100%; height: 100%; display: block; }
+.graph-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 12px 14px; color: var(--text-secondary); background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px 6px 0 0; font-size: 12px; }
+.topology-workspace { display: flex; flex: 1; min-height: 0; }
+.graph-canvas { flex: 1; min-width: 0; min-height: 0; position: relative; overflow: hidden; border: 1px solid var(--border); border-top: 0; background-color: var(--bg-input); background-image: radial-gradient(var(--border-active) 1px, transparent 1px); background-size: 20px 20px; }
+.graph-canvas svg { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+.graph-canvas svg.dragging { cursor: grabbing; }
+.graph-hint { position: absolute; left: 10px; bottom: 8px; color: var(--text-secondary); font-size: 10px; pointer-events: none; }
+.connections-panel { flex: 0 0 230px; min-width: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-left: 0; border-top: 0; background: var(--bg-surface); }
+.connections-heading { padding: 10px 12px; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--border); }
+.connections-heading span { color: var(--text-secondary); font-weight: normal; }
+.connections-note { padding: 8px 12px; color: var(--text-secondary); font-size: 11px; }
+.topo-connect-status { color: var(--text-secondary); font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.topo-log { margin: 7px 0; color: var(--text-secondary); font-size: 11px; }
+.topo-log summary { cursor: pointer; color: var(--text-primary); }
+.topo-log .topo-connect-status { padding: 6px 0; max-height: 220px; overflow-y: auto; }
+#topoVerifyProgress { width: 100%; height: 10px; margin: 8px 0; accent-color: var(--accent); }
+.connections-list { overflow-y: auto; padding: 0 8px 8px; }
+.connection-item { margin-bottom: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.connection-item strong { color: var(--text-primary); }
+.connection-item div { color: var(--text-secondary); }
+.connection-editor { margin-top: 6px; }
+.connection-editor summary { color: var(--accent); cursor: pointer; }
+.connection-editor label { display: block; margin-top: 6px; color: var(--text-secondary); }
+.connection-editor input { display: block; width: 100%; min-width: 0; margin-top: 3px; }
+.connection-editor-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.connection-editor-actions button { cursor: pointer; padding: 3px 6px; }
+.connection-editor-error { margin-top: 4px; }
+.connections-empty { color: var(--text-secondary); text-align: center; padding: 18px 4px; font-size: 11px; }
+@media (max-width: 1250px) { .connections-panel { flex-basis: 180px; } }
 .graph-empty { position: absolute; inset: 0; display: flex; justify-content: center; align-items: center; color: var(--text-secondary); pointer-events: none; }
 .graph-empty[hidden] { display: none; }
 .graph-link { stroke: #527285; stroke-width: 2; vector-effect: non-scaling-stroke; }
@@ -537,6 +562,10 @@ body.resizing-chat { cursor: col-resize; user-select: none; }
 .graph-node rect { fill: var(--bg-elevated); stroke: var(--accent-blue); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .graph-node text { text-anchor: middle; fill: var(--text-primary); font-size: 12px; }
 .graph-node .graph-icon { fill: var(--accent-blue); font-size: 20px; }
+.graph-node .device-outline { fill: var(--bg-elevated); stroke: var(--accent-blue); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.graph-node .switch-outline { stroke: var(--accent-purple); }
+.graph-node .device-mark { fill: none; stroke: var(--accent-blue); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.graph-node .switch-mark { stroke: var(--accent-purple); }
 .graph-node .graph-model { fill: var(--text-secondary); font-size: 9px; }
 .packet-panel { flex: 0 0 36%; min-height: 150px; max-height: 330px; display: flex; flex-direction: column; margin-top: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-surface); overflow: hidden; }
 .packet-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12px; }

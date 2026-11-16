@@ -1,15 +1,34 @@
 from scan_service import scan_ports_sync
 from telnet_service import connect_device as backend_connect_device
 from telnet_service import send_command as backend_send_command
+from telnet_service import send_command_complete as backend_send_command_complete
 from telnet_service import disconnect_device as backend_disconnect_device
 from telnet_service import read_output
 from session_manager import session_manager
+from lldp_service import enable_lldp as backend_enable_lldp
+from lldp_service import configure_topology_device as backend_configure_topology_device
+from lldp_service import rename_topology_device as backend_rename_topology_device
 from topo_service import get_topo_data, generate_ai_markdown, generate_readable_summary, generate_mermaid_topology, infer_network_hierarchy, generate_ai_prompt_context
 from urllib.request import urlopen
 from urllib.error import URLError
 import json
 import socket
 def register_tools(mcp):
+    @mcp.tool()
+    def rename_topology_device(ip: str, port: int, name: str) -> str:
+        """将设备名修改为拓扑名称，不保存配置。"""
+        return json.dumps(backend_rename_topology_device(ip, port, name), ensure_ascii=False)
+
+    @mcp.tool()
+    def configure_topology_device(ip: str, port: int, name: str) -> str:
+        """检查并启用全局 LLDP，不修改接口级 LLDP，也不保存配置。"""
+        return json.dumps(backend_configure_topology_device(ip, port, name), ensure_ascii=False)
+
+    @mcp.tool()
+    def enable_lldp(ip: str, port: int) -> str:
+        """检查并启用已连接设备的全局 LLDP；修改运行配置但不保存。"""
+        return json.dumps(backend_enable_lldp(ip, port), ensure_ascii=False)
+
     @mcp.tool()
     def detect_topology_devices() -> str:
         """检测当前 Web 拓扑中设备的本机 Telnet 端口，并列出已有会话；不会发送设备命令。"""
@@ -127,7 +146,7 @@ def register_tools(mcp):
             session = session_manager.get_session_by_port(ip, port)
             if not session:
                 return f"设备未连接：{ip}:{port}，请先使用 connect_device 连接"
-            output = backend_send_command(session["session_id"], "display version")
+            output = backend_send_command_complete(session["session_id"], "display version")
             return output.strip() if output else "暂无返回数据"
         except RuntimeError as e:
             return f"获取失败：{str(e)}"

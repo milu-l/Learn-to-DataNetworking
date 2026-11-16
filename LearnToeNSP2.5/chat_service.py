@@ -3,10 +3,12 @@ import asyncio
 import json
 import os
 import secrets
+import socket
+import ssl
 import threading
 import time
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, build_opener, HTTPRedirectHandler
+from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 from urllib.parse import urlsplit
 
 from fastmcp import Client
@@ -23,7 +25,8 @@ pending_lock = threading.Lock()
 config_lock = threading.Lock()
 config = {'base_url': os.environ.get('ENSP_AI_BASE_URL', '').strip().rstrip('/'),
           'model': os.environ.get('ENSP_AI_MODEL', '').strip(),
-          'api_key': os.environ.get('ENSP_AI_API_KEY', '').strip()}
+          'api_key': os.environ.get('ENSP_AI_API_KEY', '').strip(),
+          'proxy_mode': 'system'}
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -33,7 +36,7 @@ class NoRedirect(HTTPRedirectHandler):
 
 def get_config():
     with config_lock:
-        return {'base_url': config['base_url'], 'model': config['model'], 'has_api_key': bool(config['api_key'])}
+        return {'base_url': config['base_url'], 'model': config['model'], 'has_api_key': bool(config['api_key']), 'proxy_mode': config['proxy_mode']}
 
 
 def set_config(data):
@@ -59,8 +62,13 @@ def set_config(data):
         raise ValueError('远程 AI 服务请使用 HTTPS；本机服务可以使用 HTTP')
     if not isinstance(data.get('clear_api_key', False), bool):
         raise ValueError('密钥设置无效')
+    mode = data.get('proxy_mode')
+    if mode is not None and mode not in ('system', 'direct'):
+        raise ValueError('网络连接方式无效')
     with config_lock:
         config.update(base_url=base, model=model)
+        if mode is not None:
+            config['proxy_mode'] = mode
         if data.get('clear_api_key'):
             config['api_key'] = ''
         elif key:
@@ -70,37 +78,74 @@ def set_config(data):
     return get_config()
 
 
+def connection_error_message(exc):
+    reason = exc.reason if isinstance(exc, URLError) else exc
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return '连接 AI 服务超时，请检查网络、代理或稍后重试'
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return 'AI 服务 TLS 证书验证失败，请检查系统时间、证书或 HTTPS 代理'
+    if isinstance(reason, ssl.SSLError):
+        return 'AI 服务 TLS 连接失败，请检查网络或 HTTPS 代理'
+    if isinstance(reason, socket.gaierror):
+        return 'AI 服务域名解析失败，请检查 DNS 和网络'
+    if isinstance(reason, ConnectionRefusedError):
+        return 'AI 服务连接被拒绝，请检查服务地址和代理'
+    if isinstance(reason, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+        return 'AI 服务连接被中断，请检查网络和代理'
+    if 'tunnel connection failed' in str(reason).lower():
+        return 'HTTPS 代理隧道连接失败，请检查代理配置和认证'
+    return f'无法连接 AI 服务（{type(reason).__name__}），请检查地址、网络和代理'
+
+
 def model_request(messages, tools):
     with config_lock:
-        base, model, key = config['base_url'], config['model'], config['api_key']
+        base, model, key, proxy_mode = config['base_url'], config['model'], config['api_key'], config['proxy_mode']
     if not base or not model:
         raise ValueError('请先在 AI 设置中填写服务地址和模型名称')
     url = base + '/chat/completions'
     headers = {'Content-Type': 'application/json'}
     if key:
         headers['Authorization'] = 'Bearer ' + key
-    body = json.dumps({'model': model, 'messages': messages, 'tools': tools, 'tool_choice': 'auto', 'parallel_tool_calls': False}, ensure_ascii=False).encode('utf-8')
+    payload = {'model': model, 'messages': messages, 'tools': tools, 'tool_choice': 'auto'}
+    if urlsplit(base).hostname == 'api.deepseek.com':
+        # Browser history stores final answers only, so use the documented mode
+        # that does not require replaying reasoning_content with tool calls.
+        payload['thinking'] = {'type': 'disabled'}
+    else:
+        payload['parallel_tool_calls'] = False
+    body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     try:
-        with build_opener(NoRedirect).open(Request(url, data=body, headers=headers), timeout=60) as response:
-            data = json.load(response)
+        for attempt in range(2):
+            try:
+                handlers = (NoRedirect, ProxyHandler({})) if proxy_mode == 'direct' else (NoRedirect,)
+                with build_opener(*handlers).open(Request(url, data=body, headers=headers), timeout=60) as response:
+                    data = json.load(response)
+                break
+            except (URLError, ConnectionResetError, ConnectionAbortedError, BrokenPipeError) as exc:
+                reason = exc.reason if isinstance(exc, URLError) else exc
+                if attempt or isinstance(exc, HTTPError) or not isinstance(reason, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+                    raise
+                time.sleep(0.5)
         return data['choices'][0]['message']
     except HTTPError as exc:
+        exc.close()
         raise ValueError(f'AI 服务返回 HTTP {exc.code}，请检查接口、模型和密钥') from exc
     except (URLError, TimeoutError, OSError) as exc:
-        raise ValueError('无法连接 AI 服务，请检查地址和网络') from exc
+        raise ValueError(connection_error_message(exc)) from exc
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
         raise ValueError('AI 服务返回格式不兼容，请使用支持工具调用的 Chat Completions 接口') from exc
 
 
-async def run_chat(messages, approved=None, auto_execute=False):
+async def run_chat(messages, approved=None, auto_execute=False, remaining=None):
     async with Client(MCP_URL, timeout=30) as client:
         listed = await client.list_tools()
         available = {tool.name: tool for tool in listed}
         schemas = [{'type': 'function', 'function': {'name': tool.name, 'description': tool.description or '',
                     'parameters': tool.input_schema}} for tool in listed]
         steps = []
+        queue = list(remaining or [])
         for iteration in range(20):
-            if approved is None:
+            if approved is None and not queue:
                 try:
                     reply = await asyncio.to_thread(model_request, messages, schemas)
                 except ValueError as exc:
@@ -113,19 +158,24 @@ async def run_chat(messages, approved=None, auto_execute=False):
                     if not isinstance(content, str):
                         raise ValueError('AI 服务返回了不支持的回复格式')
                     return {'reply': content, 'steps': steps}
-                if len(calls) != 1:
-                    raise ValueError('AI 一次请求了多个工具，请重新发送并逐步执行')
-                call = calls[0]
                 try:
-                    function = call['function']
-                    name = function['name']
-                    args = json.loads(function['arguments'])
-                    call_id = call['id']
-                    if name not in available or not isinstance(args, dict) or not isinstance(call_id, str):
-                        raise ValueError('AI 请求了无效工具')
+                    if not isinstance(calls, list) or len(calls) > 20:
+                        raise ValueError('AI 请求的工具数量无效')
+                    ids = set()
+                    for call in calls:
+                        function = call['function']
+                        name = function['name']
+                        args = json.loads(function['arguments'])
+                        call_id = call['id']
+                        if name not in available or not isinstance(args, dict) or not isinstance(call_id, str) or not call_id or call_id in ids:
+                            raise ValueError('AI 请求了无效工具')
+                        ids.add(call_id)
+                        queue.append((name, args, call_id))
                 except (KeyError, TypeError, json.JSONDecodeError) as exc:
                     raise ValueError('AI 返回了无效的工具调用') from exc
-                messages.append({'role': 'assistant', 'content': reply.get('content'), 'tool_calls': [call]})
+                messages.append({'role': 'assistant', 'content': reply.get('content'), 'tool_calls': calls})
+            if approved is None:
+                name, args, call_id = queue.pop(0)
                 if name not in READ_ONLY and not auto_execute:
                     token = secrets.token_urlsafe(32)
                     with pending_lock:
@@ -133,7 +183,7 @@ async def run_chat(messages, approved=None, auto_execute=False):
                         for old in list(pending):
                             if pending[old]['expires'] < now:
                                 pending.pop(old, None)
-                        pending[token] = {'messages': messages, 'call': (name, args, call_id), 'expires': now + 300}
+                        pending[token] = {'messages': messages, 'call': (name, args, call_id), 'remaining': queue, 'expires': now + 300}
                     return {'pending': {'token': token, 'name': name, 'arguments': args}, 'steps': steps}
             else:
                 name, args, call_id = approved
@@ -173,4 +223,4 @@ def confirm(token, allow):
         raise ValueError('操作已过期或已处理，请重新发送请求')
     if not allow:
         return {'reply': '已取消该操作。', 'steps': []}
-    return asyncio.run(run_chat(item['messages'], item['call']))
+    return asyncio.run(run_chat(item['messages'], item['call'], remaining=item.get('remaining')))

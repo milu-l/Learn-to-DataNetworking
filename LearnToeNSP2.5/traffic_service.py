@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 import socket
 import struct
 import hashlib
+import tempfile
 from collections import deque
 
 
@@ -155,6 +156,30 @@ def discover_devices(device_ids):
     return mapping
 
 
+def capture_lookup(links, mapping):
+    lookup, coverage = {}, {}
+    total = 0
+    for index, link in enumerate(links):
+        for pair_index, pair in enumerate(link.get('interface_pairs', [])):
+            total += 1
+            link_id = f'{index}:{pair_index}'
+            endpoints = 0
+            for device_key, port_key in (('source_id', 'src_port_index'), ('target_id', 'dst_port_index')):
+                device_id = str(link[device_key]).upper()
+                mac = mapping.get(device_id)
+                raw_port = pair.get(port_key)
+                if mac is None or isinstance(raw_port, bool) or not str(raw_port).isdigit() or not 0 <= int(raw_port) <= 99:
+                    continue
+                key = (mac, int(raw_port))
+                if key in lookup and lookup[key][0] != link_id:
+                    raise ValueError('拓扑中一个设备接口对应多条连线，无法准确监控')
+                lookup[key] = (link_id, str(link[device_key]))
+                endpoints += 1
+            if endpoints:
+                coverage[link_id] = endpoints
+    return lookup, coverage, total
+
+
 class TrafficMonitor:
     def __init__(self):
         self.lock = threading.RLock()
@@ -174,20 +199,9 @@ class TrafficMonitor:
             raise ValueError('请先上传包含连线的拓扑')
         ids = {str(link[key]).upper() for link in links for key in ('source_id', 'target_id')}
         mapping = discover_devices(ids)
-        missing = ids - mapping.keys()
-        if missing:
-            raise ValueError('无法识别设备虚拟网卡：' + ', '.join(sorted(missing)) + '。请启动 eNSP 设备并检查 VirtualBox 配置权限。')
-        lookup = {}
-        for index, link in enumerate(links):
-            for pair_index, pair in enumerate(link.get('interface_pairs', [])):
-                link_id = f'{index}:{pair_index}'
-                for device_key, port_key in (('source_id', 'src_port_index'), ('target_id', 'dst_port_index')):
-                    key = (mapping[str(link[device_key]).upper()], int(pair[port_key]))
-                    if key in lookup and lookup[key][0] != link_id:
-                        raise ValueError('拓扑中一个设备接口对应多条连线，无法准确监控')
-                    lookup[key] = (link_id, str(link[device_key]))
+        lookup, coverage, total = capture_lookup(links, mapping)
         if not lookup:
-            raise ValueError('拓扑没有可识别的接口连线')
+            raise ValueError('没有可映射的 eNSP 路由器链路；请启动设备并检查 VirtualBox 配置权限')
         with self.lock:
             if self.process and self.process.poll() is None:
                 raise ValueError('监控已在运行')
@@ -195,19 +209,26 @@ class TrafficMonitor:
             generation = self.generation
             self.counts = {}
             self.packets.clear()
-            self.rates = {link_id: {'pps': 0, 'bps': 0} for link_id, _ in lookup.values()}
-            process = subprocess.Popen([tshark_path(), '-l', '-n', '-i', interface, '-f', 'udp portrange 10000-10099',
+            self.rates = {link_id: {'pps': 0, 'bps': 0, 'endpoints': endpoints} for link_id, endpoints in coverage.items()}
+            stderr_log = tempfile.TemporaryFile(mode='w+t', encoding='utf-8', errors='replace')
+            try:
+                process = subprocess.Popen([tshark_path(), '-l', '-n', '-i', interface, '-f', 'udp portrange 10000-10099',
                 '-Y', 'udp.length > 12', '-T', 'fields', '-e', 'eth.src', '-e', 'udp.srcport', '-e', 'frame.len',
                 '-e', 'frame.time_epoch', '-e', 'ip.src', '-e', 'ip.dst', '-e', 'udp.dstport', '-e', 'data.data'],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace',
+                stdout=subprocess.PIPE, stderr=stderr_log, text=True, encoding='utf-8', errors='replace',
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            except Exception:
+                stderr_log.close()
+                self.rates = {}
+                raise
             self.process = process
-            self.message = '监控中（封装流量估算）'
-        threading.Thread(target=self._read, args=(process, generation, lookup), daemon=True).start()
+            single = sum(value == 1 for value in coverage.values())
+            self.message = f'监控中：覆盖 {len(coverage)}/{total} 条链路，其中 {single} 条仅单端（流量估算）'
+        threading.Thread(target=self._read, args=(process, generation, lookup, stderr_log), daemon=True).start()
         threading.Thread(target=self._sample, args=(process, generation), daemon=True).start()
         return len(self.rates)
 
-    def _read(self, process, generation, lookup):
+    def _read(self, process, generation, lookup, stderr_log):
         try:
             for row in process.stdout:
                 parts = row.rstrip('\r\n').split('\t')
@@ -249,11 +270,14 @@ class TrafficMonitor:
                         self.packets.append(packet)
         finally:
             process.stdout.close()
+            stderr_log.seek(0)
+            error = stderr_log.read()[-1000:].strip()
+            stderr_log.close()
             with self.lock:
                 if generation == self.generation:
                     self.process = None
                     self.rates = {}
-                    self.message = '抓包已停止，请检查网卡和 Npcap 权限'
+                    self.message = '抓包已停止：' + error if error else '抓包已停止，请检查网卡和 Npcap 权限'
 
     def _sample(self, process, generation):
         last = time.monotonic()
@@ -267,7 +291,7 @@ class TrafficMonitor:
                 last = now
                 for link_id in self.rates:
                     count = self.counts.get(link_id, [0, 0])
-                    self.rates[link_id] = {'pps': count[0] / elapsed, 'bps': count[1] * 8 / elapsed}
+                    self.rates[link_id] = {'pps': count[0] / elapsed, 'bps': count[1] * 8 / elapsed, 'endpoints': self.rates[link_id]['endpoints']}
                 self.counts.clear()
 
     def stop(self):

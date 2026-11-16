@@ -63,6 +63,14 @@
                         <h2>设备列表</h2>
                         <span class="device-count" id="deviceCount">0</span>
                     </div>
+                    <div class="panel-body">
+                        <button type="button" class="btn btn-topo-analyze" id="topoConnectButton" onclick="connectTopologyDevices()">一键连接拓扑设备</button>
+                        <div class="topo-hint">先上传拓扑；连接后可在拓扑分析中验证接口。</div>
+                        <details class="topo-log" id="topoConnectLog" hidden>
+                            <summary>连接日志</summary>
+                            <div id="topoConnectStatus" class="topo-connect-status" aria-live="polite"></div>
+                        </details>
+                    </div>
                     <div class="panel-body" id="deviceList">
                         <div class="empty-state">等待扫描...</div>
                     </div>
@@ -99,6 +107,14 @@
                             <div class="topo-stats" id="topoStats"></div>
                         </div>
                         <div class="topo-actions" id="topoActions" style="display:none">
+                            <button type="button" class="btn btn-topo-analyze" id="topoVerifyButton" onclick="verifyTopologyInterfaces()">验证链路接口</button>
+                            <div class="topo-hint">跳过 PC、AP 和 Server；改名后检查全局 LLDP 并查询邻居，不配置接口级 LLDP。修改运行配置，不自动保存。</div>
+                            <progress id="topoVerifyProgress" value="0" max="100" hidden aria-label="接口验证进度"></progress>
+                            <div id="topoVerifyStatus" class="topo-connect-status" aria-live="polite"></div>
+                            <details class="topo-log" id="topoVerifyLog" hidden>
+                                <summary>验证日志</summary>
+                                <div id="topoVerifyLogContent" class="topo-connect-status"></div>
+                            </details>
                             <button class="btn btn-topo-analyze" onclick="analyzeTopo('markdown')">完整报告</button>
                             <button class="btn btn-topo-analyze" onclick="analyzeTopo('summary')">文本摘要</button>
                             <button class="btn btn-topo-analyze" onclick="analyzeTopo('mermaid')">Mermaid图</button>
@@ -141,10 +157,18 @@
                 </div>
                 </div>
                 <div id="topologyView" class="workspace-view topology-view" hidden>
-                    <div class="graph-heading"><span>网络拓扑 <span id="graphStats"></span></span><div class="traffic-controls"><select id="trafficInterface" aria-label="抓包网卡"><option value="">选择抓包网卡</option></select><button type="button" id="trafficButton" onclick="toggleTraffic()">开始监控</button><span id="trafficStatus" aria-live="polite">未监控</span></div></div>
-                    <div class="graph-canvas">
-                        <svg id="topologyGraph" role="img" aria-label="网络拓扑图"></svg>
-                        <div id="graphEmpty" class="graph-empty">上传拓扑文件后显示设备与连线</div>
+                    <div class="graph-heading"><span>网络拓扑 <span id="graphStats"></span></span><div class="traffic-controls"><button type="button" onclick="zoomTopology(1.25)" aria-label="放大拓扑">＋</button><button type="button" onclick="zoomTopology(0.8)" aria-label="缩小拓扑">−</button><button type="button" onclick="resetTopologyZoom()">适应画布</button><select id="trafficInterface" aria-label="抓包网卡"><option value="">选择抓包网卡</option></select><button type="button" id="trafficButton" onclick="toggleTraffic()">开始监控</button><span id="trafficStatus" aria-live="polite">未监控</span></div></div>
+                    <div class="topology-workspace">
+                        <div class="graph-canvas">
+                            <svg id="topologyGraph" role="img" aria-label="网络拓扑图，使用滚轮缩放并拖动平移"></svg>
+                            <div id="graphEmpty" class="graph-empty">上传拓扑文件后显示设备与连线</div>
+                            <div class="graph-hint">滚轮缩放 · 拖动画布平移</div>
+                        </div>
+                        <aside class="connections-panel" aria-label="拓扑互联信息">
+                            <div class="connections-heading">互联信息 <span id="connectionCount"></span></div>
+                            <div class="connections-note">链路两端的双向 LLDP 和接口匹配后即显示接口；未确认的链路显示待验证，状态变化后请重新验证。</div>
+                            <div id="connectionList" class="connections-list"><div class="connections-empty">上传拓扑后显示连线</div></div>
+                        </aside>
                     </div>
                     <section class="packet-panel" aria-label="数据包分析">
                         <div class="packet-heading"><span>数据包分析 <small>点击报文溯源 · 最近 200 条</small></span><div><select id="traceSpeed" aria-label="播放速度"><option value="4000">慢放 4 秒/跳</option><option value="2000">2 秒/跳</option><option value="8000">8 秒/跳</option></select> <button type="button" onclick="replayTrace()">重播</button> <button type="button" onclick="stopTrace()">停止</button> <select id="packetProtocol" aria-label="协议筛选" onchange="renderPackets()"><option value="">全部协议</option><option>ICMP</option><option>TCP</option><option>UDP</option><option>OSPF</option><option>ARP</option><option>IPv6</option><option>未知</option></select> <button type="button" onclick="clearPackets()">清空</button></div></div>
@@ -160,12 +184,14 @@
                 <div class="chat-note">AI 可自动检测已上传拓扑中的本机设备。对话和工具结果会发送给所配置的 AI 服务。</div>
                 <label class="chat-auto"><input id="chatAutoExecute" type="checkbox" checked> 默认自动执行 MCP 操作（含设备配置命令）</label>
                 <form id="chatSettings" class="chat-settings" hidden>
+                    <label>模型模板<select id="aiTemplate"><option value="custom">自定义</option><option value="deepseek-flash">DeepSeek Flash</option><option value="deepseek-v4-pro">DeepSeek V4 Pro</option></select></label>
                     <label>API 基础地址<input id="aiBaseUrl" type="url" required placeholder="https://服务地址/v1" autocomplete="off"></label>
                     <label>模型名称<input id="aiModel" type="text" required maxlength="200" placeholder="模型名称" autocomplete="off"></label>
+                    <label>网络连接<select id="aiProxyMode"><option value="system">使用系统代理</option><option value="direct">直连（不使用代理）</option></select></label>
                     <label>API 密钥<input id="aiApiKey" type="password" maxlength="4096" placeholder="留空保持现有密钥" autocomplete="new-password"></label>
                     <label class="chat-clear-key"><input id="aiClearKey" type="checkbox"> 清除已保存的密钥</label>
                     <div class="chat-settings-footer"><button type="submit" id="aiSave">保存设置</button><span id="aiSettingsStatus" aria-live="polite"></span></div>
-                    <small>仅在当前服务进程内保存，重启后恢复环境变量设置。远程地址需使用 HTTPS。</small>
+                    <small>DeepSeek 模板使用非思考模式并需填写 DeepSeek API 密钥。设置仅在当前服务进程内保存，重启后恢复环境变量设置。远程地址需使用 HTTPS。</small>
                 </form>
                 <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
                 <div id="chatApproval" class="chat-approval" hidden><pre id="chatApprovalText"></pre><button type="button" onclick="confirmChatTool(true)">执行</button> <button type="button" onclick="confirmChatTool(false)">取消</button></div>

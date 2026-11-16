@@ -19,6 +19,15 @@ from urllib.parse import urlsplit
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 CORS(app)
+topology_resolve_lock = threading.Lock()
+topology_progress_lock = threading.Lock()
+topology_progress = {'state': 'idle', 'percent': 0, 'message': ''}
+verified_topology = None
+verified_topology_links = {}
+candidate_topology_links = {}
+manual_topology = None
+manual_topology_links = {}
+topology_revision = 0
 
 
 def is_local_chat_request():
@@ -212,6 +221,7 @@ def api_sessions():
 
 @app.route("/api/topo/upload", methods=["POST"])
 def api_topo_upload():
+    global verified_topology, verified_topology_links, candidate_topology_links, manual_topology, manual_topology_links, topology_revision
     if "file" not in request.files:
         return jsonify({"error": "请选择文件上传"}), 400
 
@@ -239,6 +249,9 @@ def api_topo_upload():
     traffic_monitor.stop()
     traffic_monitor.clear_packets()
     set_topo_data(data, file.filename)
+    verified_topology, verified_topology_links, candidate_topology_links = None, {}, {}
+    manual_topology, manual_topology_links = data, {}
+    topology_revision += 1
 
     return jsonify({
         "success": True,
@@ -312,10 +325,14 @@ def api_topo_status():
 
 @app.route("/api/topo", methods=["DELETE"])
 def api_topo_delete():
+    global verified_topology, verified_topology_links, candidate_topology_links, manual_topology, manual_topology_links, topology_revision
     traffic_monitor.stop()
     traffic_monitor.clear_packets()
     try:
         clear_topo_data()
+        verified_topology, verified_topology_links, candidate_topology_links = None, {}, {}
+        manual_topology, manual_topology_links = None, {}
+        topology_revision += 1
     except OSError:
         app.logger.exception("Failed to clear topology data")
         return jsonify({"error": "无法删除拓扑数据，请检查文件权限"}), 500
@@ -327,13 +344,151 @@ def api_topo_graph():
     data = get_topo_data()
     if not data:
         return jsonify({"loaded": False})
-    devices = [{"id": d["id"], "name": d["name"], "model": d["model"],
+    devices = [{"id": d["id"], "name": d["name"], "model": d["model"], "category": d.get("category", ""),
                 "com_port": d.get("com_port", ""), "position": d["position"]}
                for d in data["device_inventory"].values()]
+    resolved = verified_topology_links if verified_topology is data else {}
+    candidates = candidate_topology_links if verified_topology is data else {}
+    manual = manual_topology_links if manual_topology is data else {}
     connections = [{"source_id": c["source_id"], "target_id": c["target_id"],
-                    "link_count": c["link_count"]} for c in data["connections"]]
-    return jsonify({"loaded": True, "filename": get_topo_filename(), "summary": data["summary"],
+                    "link_count": c["link_count"],
+                    "interface_pairs": [{"src_port_index": p.get("src_port_index"),
+                                         "dst_port_index": p.get("dst_port_index"),
+                                         "line_type": p.get("line_type", ""),
+                                         "verified": resolved.get(f'{i}:{j}'),
+                                         "candidate": candidates.get(f'{i}:{j}'),
+                                         "manual": manual.get(f'{i}:{j}')}
+                                        for j, p in enumerate(c.get("interface_pairs", []))]}
+                   for i, c in enumerate(data["connections"])]
+    return jsonify({"loaded": True, "revision": topology_revision, "filename": get_topo_filename(), "summary": data["summary"],
                     "devices": devices, "connections": connections})
+
+
+@app.route('/api/topo/manual-interfaces', methods=['POST', 'DELETE'])
+def api_topo_manual_interfaces():
+    global manual_topology, manual_topology_links
+    if not is_local_chat_request():
+        return jsonify({'error': '手动填写接口仅允许本机页面访问'}), 403
+    topology = get_topo_data()
+    data = request.get_json(silent=True)
+    if not topology or not isinstance(data, dict):
+        return jsonify({'error': '拓扑未加载或请求无效'}), 400
+    if type(data.get('revision')) is not int or data['revision'] != topology_revision:
+        return jsonify({'error': '拓扑已变更，请刷新后重试'}), 409
+    index, pair_index = data.get('link_index'), data.get('pair_index')
+    if type(index) is not int or type(pair_index) is not int or index < 0 or pair_index < 0:
+        return jsonify({'error': '链路编号无效'}), 400
+    connections = topology.get('connections', [])
+    if index >= len(connections):
+        return jsonify({'error': '链路不存在，请刷新拓扑'}), 400
+    link = connections[index]
+    if (pair_index >= len(link.get('interface_pairs', [])) or
+            data.get('source_id') != link.get('source_id') or data.get('target_id') != link.get('target_id')):
+        return jsonify({'error': '链路已变更，请刷新拓扑'}), 409
+    key = f'{index}:{pair_index}'
+    if manual_topology is not topology:
+        manual_topology, manual_topology_links = topology, {}
+    if request.method == 'DELETE':
+        manual_topology_links.pop(key, None)
+    else:
+        source, target = data.get('source_interface'), data.get('target_interface')
+        if not isinstance(source, str) or not isinstance(target, str):
+            return jsonify({'error': '接口名称必须为文本'}), 400
+        source, target = source.strip(), target.strip()
+        if (not source and not target) or any(len(value) > 64 or any(ord(char) < 32 or ord(char) == 127 for char in value) for value in (source, target)):
+            return jsonify({'error': '请填写至少一端接口名，每端最多 64 个字符且不能包含控制字符'}), 400
+        manual_topology_links[key] = {'source_interface': source, 'target_interface': target}
+    return jsonify({'success': True})
+
+
+@app.route('/api/topo/connect', methods=['POST'])
+def api_topo_connect():
+    if not is_local_chat_request():
+        return jsonify({'error': '一键连接仅允许本机页面访问'}), 403
+    topology = get_topo_data()
+    if not topology:
+        return jsonify({'error': '请先上传拓扑文件'}), 400
+    if not topology_resolve_lock.acquire(blocking=False):
+        return jsonify({'error': '设备连接和 LLDP 检测正在进行'}), 409
+    try:
+        from topology_resolver import discover
+        result = asyncio.run(discover(topology, connect=True, verify=False))
+        if get_topo_data() is not topology:
+            return jsonify({'error': '检测期间拓扑已更改，请重新执行；已建立的设备会话仍保留'}), 409
+        return jsonify({'success': True, 'devices': result['devices']})
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception:
+        app.logger.exception('Topology connection or MCP query failed')
+        return jsonify({'error': '无法连接 MCP 服务或查询设备；已建立的会话仍保留'}), 503
+    finally:
+        topology_resolve_lock.release()
+
+
+@app.route('/api/topo/verify', methods=['POST'])
+def api_topo_verify():
+    global verified_topology, verified_topology_links, candidate_topology_links
+    if not is_local_chat_request():
+        return jsonify({'error': '接口验证仅允许本机页面访问'}), 403
+    topology = get_topo_data()
+    if not topology:
+        return jsonify({'error': '请先上传拓扑文件'}), 400
+    if not topology_resolve_lock.acquire(blocking=False):
+        return jsonify({'error': '设备连接或接口验证正在进行'}), 409
+    verified_topology, verified_topology_links, candidate_topology_links = None, {}, {}
+    with topology_progress_lock:
+        topology_progress.clear()
+        topology_progress.update(state='running', percent=0, message='正在修改设备名称', revision=0)
+
+    def update_progress(percent, message):
+        with topology_progress_lock:
+            topology_progress.update(percent=percent, message=message)
+
+    def update_links(links):
+        global verified_topology, verified_topology_links, candidate_topology_links
+        if get_topo_data() is not topology:
+            return
+        with topology_progress_lock:
+            if verified_topology is not topology or verified_topology_links != links:
+                verified_topology, verified_topology_links, candidate_topology_links = topology, links, {}
+                topology_progress['revision'] += 1
+
+    def run():
+        global verified_topology, verified_topology_links, candidate_topology_links
+        try:
+            from topology_resolver import discover
+            result = asyncio.run(discover(topology, connect=False, verify=True, progress=update_progress, on_update=update_links))
+            if get_topo_data() is not topology:
+                raise ValueError('验证期间拓扑已更改，请重新验证')
+            verified_topology, verified_topology_links, candidate_topology_links = topology, result['verified'], result['candidates']
+            with topology_progress_lock:
+                topology_progress.update(state='done', percent=100, message='验证完成',
+                                         devices=result['devices'], verified_count=len(result['verified']),
+                                         candidate_count=len(result['candidates']))
+        except Exception as exc:
+            app.logger.exception('Topology verification failed')
+            with topology_progress_lock:
+                topology_progress.update(state='error', message=str(exc) if isinstance(exc, ValueError) else 'MCP 服务或设备查询失败')
+        finally:
+            topology_resolve_lock.release()
+    try:
+        threading.Thread(target=run, daemon=True).start()
+    except Exception:
+        topology_resolve_lock.release()
+        with topology_progress_lock:
+            topology_progress.update(state='error', message='无法启动接口验证')
+        return jsonify({'error': '无法启动接口验证'}), 500
+    return jsonify({'success': True}), 202
+
+
+@app.route('/api/topo/verify/progress')
+def api_topo_verify_progress():
+    if not is_local_chat_request():
+        return jsonify({'error': '仅允许本机页面访问'}), 403
+    with topology_progress_lock:
+        response = jsonify(dict(topology_progress))
+    response.headers['Cache-Control'] = 'no-store'
+    return response
 
 
 @app.route("/api/traffic/interfaces")

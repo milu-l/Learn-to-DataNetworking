@@ -1,4 +1,5 @@
 import telnetlib
+import re
 import threading
 import time
 
@@ -43,20 +44,49 @@ def connect_device(ip, port, timeout=10):
     return session["session_id"], initial
 
 
-def send_command(session_id, command):
+def send_command(session_id, command, wait_seconds=0.6):
     session = session_manager.get_telnet_session(session_id)
     if not session:
         raise RuntimeError(f"会话不存在: {session_id}")
     if session["status"] != "connected":
         raise RuntimeError(f"会话已断开: {session_id}")
 
-    tn = session["client"]
-    cmd_bytes = (command + "\n").encode("utf-8")
-    tn.write(cmd_bytes)
+    with session["command_lock"]:
+        tn = session["client"]
+        cmd_bytes = (command + "\n").encode("utf-8")
+        tn.write(cmd_bytes)
+        time.sleep(wait_seconds)
+        return session_manager.pop_output(session_id)
 
-    time.sleep(0.6)
-    output = session_manager.pop_output(session_id)
-    return output
+
+def send_command_complete(session_id, command, timeout=8):
+    """Wait for this command's echo and prompt; never treat an old prompt as its result."""
+    session = session_manager.get_telnet_session(session_id)
+    if not session or session['status'] != 'connected':
+        raise RuntimeError(f'设备会话不可用: {session_id}')
+    with session['command_lock']:
+        previous = session_manager.pop_output(session_id)
+        output = ''
+        try:
+            session['client'].write((command + '\n').encode('utf-8'))
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                time.sleep(0.1)
+                output += session_manager.pop_output(session_id)
+                echo = output.lower().find(command.lower())
+                if echo < 0:
+                    continue
+                body = output[echo + len(command):]
+                if re.search(r'----\s*More\s*----', body, re.I):
+                    return '设备输出被分页，以下内容不完整：\n' + output[echo:]
+                if re.search(r'(?m)^\s*(?:<[^\r\n<>]+>|\[[^\r\n\[\]]+\])\s*$', body):
+                    return output[echo:]
+                if len(output) > 1024 * 1024:
+                    break
+            return '设备未在等待时间内返回完整命令输出和提示符；结果不完整。\n' + output[-4000:]
+        finally:
+            if previous:
+                session_manager.append_output(session_id, previous)
 
 
 def disconnect_device(session_id):
@@ -77,5 +107,10 @@ def read_output(session_id):
     session = session_manager.get_telnet_session(session_id)
     if not session:
         return "", False
-    output = session_manager.pop_output(session_id)
-    return output, session["status"] == "connected"
+    if not session["command_lock"].acquire(blocking=False):
+        return "", session["status"] == "connected"
+    try:
+        output = session_manager.pop_output(session_id)
+        return output, session["status"] == "connected"
+    finally:
+        session["command_lock"].release()

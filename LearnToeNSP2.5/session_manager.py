@@ -94,7 +94,8 @@ class SessionManager:
             "status": "connected",
             "output_buffer": [],
             "created_at": time.time(),
-            "last_active": time.time()
+            "last_active": time.time(),
+            "command_lock": threading.RLock()
         }
         with self._lock:
             self._telnet_sessions[session_id] = session

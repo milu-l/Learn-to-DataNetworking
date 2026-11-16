@@ -10,11 +10,15 @@ let state = {
 };
 let trafficRunning = false;
 let trafficBusy = false;
+let trafficError = '';
 let packetData = [];
 let packetLinks = {};
 let traceEdges = {};
 let traceSelection = null;
 let traceAnimation = null;
+let graphFit = null;
+let graphBox = null;
+let graphSignature = null;
 let chatHistory = [];
 let chatPending = null;
 let chatBusy = false;
@@ -77,6 +81,18 @@ function initChatResize() {
     });
 }
 
+var chatSettingsCurrentBase = '';
+var chatSettingsHasKey = false;
+var DEEPSEEK_BASE = 'https://api.deepseek.com';
+
+function applyChatTemplate() {
+    var model = document.getElementById('aiTemplate').value;
+    if (model !== 'deepseek-flash' && model !== 'deepseek-v4-pro') return;
+    document.getElementById('aiBaseUrl').value = DEEPSEEK_BASE;
+    document.getElementById('aiModel').value = model;
+    document.getElementById('aiSettingsStatus').textContent = '已填入 DeepSeek 模板，请检查 API 密钥并保存';
+}
+
 function toggleChatSettings() {
     var form = document.getElementById('chatSettings');
     form.hidden = !form.hidden;
@@ -92,6 +108,10 @@ async function loadChatSettings() {
         if (!response.ok) throw new Error(data.error || '读取失败');
         document.getElementById('aiBaseUrl').value = data.base_url;
         document.getElementById('aiModel').value = data.model;
+        document.getElementById('aiProxyMode').value = data.proxy_mode || 'system';
+        chatSettingsCurrentBase = data.base_url.replace(/\/$/, '');
+        chatSettingsHasKey = data.has_api_key;
+        document.getElementById('aiTemplate').value = (chatSettingsCurrentBase === DEEPSEEK_BASE || chatSettingsCurrentBase === DEEPSEEK_BASE + '/v1') && ['deepseek-flash', 'deepseek-v4-pro'].includes(data.model) ? data.model : 'custom';
         document.getElementById('aiApiKey').value = '';
         document.getElementById('aiClearKey').checked = false;
         status.textContent = data.has_api_key ? '已设置密钥' : '未设置密钥';
@@ -101,11 +121,19 @@ async function loadChatSettings() {
 async function saveChatSettings(event) {
     event.preventDefault();
     var button = document.getElementById('aiSave'), status = document.getElementById('aiSettingsStatus');
+    var nextBase = document.getElementById('aiBaseUrl').value.trim().replace(/\/$/, '');
+    if (['deepseek-flash', 'deepseek-v4-pro'].includes(document.getElementById('aiTemplate').value) && nextBase === DEEPSEEK_BASE &&
+        chatSettingsHasKey && ![DEEPSEEK_BASE, DEEPSEEK_BASE + '/v1'].includes(chatSettingsCurrentBase) &&
+        !document.getElementById('aiApiKey').value.trim() && !document.getElementById('aiClearKey').checked) {
+        status.textContent = '切换到 DeepSeek 请填写 DeepSeek 密钥，或勾选清除旧密钥';
+        return;
+    }
     button.disabled = true;
     try {
         var response = await fetch('/api/chat/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
             base_url: document.getElementById('aiBaseUrl').value,
             model: document.getElementById('aiModel').value,
+            proxy_mode: document.getElementById('aiProxyMode').value,
             api_key: document.getElementById('aiApiKey').value,
             clear_api_key: document.getElementById('aiClearKey').checked
         })});
@@ -113,6 +141,8 @@ async function saveChatSettings(event) {
         if (!response.ok) throw new Error(data.error || '保存失败');
         document.getElementById('aiApiKey').value = '';
         document.getElementById('aiClearKey').checked = false;
+        chatSettingsCurrentBase = data.base_url.replace(/\/$/, '');
+        chatSettingsHasKey = data.has_api_key;
         if (chatPending) {
             chatPending = null;
             document.getElementById('chatApproval').hidden = true;
@@ -423,11 +453,6 @@ function createSessionTab(sessionId, ip, port, initialOutput) {
 
     document.getElementById("terminalContent").appendChild(panel);
 
-    if (initialOutput) {
-        appendToSession(sessionId, initialOutput.trim(), "output");
-    }
-    appendToSession(sessionId, "[连接] 已连接到 " + ip + ":" + port + " (会话: " + sessionId + ")", "info");
-
     state.sessions[sessionId] = {
         ip: ip,
         port: port,
@@ -436,6 +461,11 @@ function createSessionTab(sessionId, ip, port, initialOutput) {
         panelEl: panel
     };
 
+    if (initialOutput) {
+        appendToSession(sessionId, initialOutput.trim(), "output");
+    }
+    appendToSession(sessionId, "[连接] 已连接到 " + ip + ":" + port + " (会话: " + sessionId + ")", "info");
+
     startPolling(sessionId);
     renderTabs();
 }
@@ -443,12 +473,15 @@ function createSessionTab(sessionId, ip, port, initialOutput) {
 function disconnectDevice(port) {
     var sessionId = state.connectedDevices[port];
     if (!sessionId) return;
+    disconnectSession(sessionId, port);
+}
 
+function disconnectSession(sessionId, port) {
     fetch("/api/telnet/" + sessionId + "/disconnect", { method: "POST" })
     .then(function(r) { return r.json(); })
     .then(function(data) {
         stopPolling(sessionId);
-        delete state.connectedDevices[port];
+        if (state.connectedDevices[port] === sessionId) delete state.connectedDevices[port];
 
         var panel = document.getElementById("panel-" + sessionId);
         if (panel) panel.remove();
@@ -523,7 +556,7 @@ function renderTabs() {
 }
 
 function closeTab(sessionId, port) {
-    disconnectDevice(parseInt(port));
+    disconnectSession(sessionId, parseInt(port));
 }
 
 function handleTerminalKey(sessionId) {
@@ -666,12 +699,12 @@ function switchWorkspaceView(view) {
     if (isTopology) loadTopologyGraph();
 }
 
-function loadTopologyGraph() {
-    fetch("/api/topo/graph", { cache: "no-store" })
+function loadTopologyGraph(throwOnError) {
+    return fetch("/api/topo/graph", { cache: "no-store" })
     .then(function(r) { if (!r.ok) throw new Error("无法获取拓扑"); return r.json(); })
     .then(function(data) {
         renderTopologyGraph(data);
-        if (!data.loaded) { resetTopologyDisplay(); return; }
+        if (!data.loaded) { resetTopologyDisplay(); if (throwOnError) throw new Error('拓扑已删除，请重新上传'); return; }
         state.topologyNames = {};
         (data.devices || []).forEach(function(device) {
             if (/^\d+$/.test(String(device.com_port)) && device.name) state.topologyNames[Number(device.com_port)] = device.name;
@@ -685,7 +718,7 @@ function loadTopologyGraph() {
         document.getElementById("topoActions").style.display = "block";
         document.getElementById("clearTopologyButton").hidden = false;
     })
-    .catch(function() { document.getElementById("graphEmpty").textContent = "无法加载拓扑，请刷新后重试"; document.getElementById("graphEmpty").hidden = false; });
+    .catch(function(error) { document.getElementById("graphEmpty").textContent = "无法加载拓扑，请刷新后重试"; document.getElementById("graphEmpty").hidden = false; if (throwOnError) throw error; });
 }
 
 function resetTopologyDisplay() {
@@ -700,6 +733,12 @@ function resetTopologyDisplay() {
     renderDeviceList();
     document.getElementById('topoFilename').textContent = '';
     document.getElementById('topoStats').textContent = '';
+    document.getElementById('topoConnectStatus').textContent = '';
+    document.getElementById('topoConnectLog').hidden = true;
+    document.getElementById('topoVerifyStatus').textContent = '';
+    document.getElementById('topoVerifyLogContent').textContent = '';
+    document.getElementById('topoVerifyLog').hidden = true;
+    document.getElementById('topoVerifyProgress').hidden = true;
     document.getElementById('topoStatus').textContent = '未加载';
     document.getElementById('topoStatus').classList.remove('loaded');
     document.getElementById('topoInfo').style.display = 'none';
@@ -709,6 +748,83 @@ function resetTopologyDisplay() {
     document.getElementById('topoFileInput').value = '';
     document.getElementById('clearTopologyButton').hidden = true;
     renderTopologyGraph({loaded: false});
+}
+
+async function connectTopologyDevices() {
+    var button = document.getElementById('topoConnectButton');
+    var status = document.getElementById('topoConnectStatus');
+    var log = document.getElementById('topoConnectLog');
+    log.hidden = false;
+    log.open = true;
+    button.disabled = true;
+    status.textContent = '正在连接拓扑设备…';
+    try {
+        var response = await fetch('/api/topo/connect', {method: 'POST'});
+        var data = await response.json();
+        if (!response.ok) throw new Error(data.error || '检测失败');
+        var localList = !state.scanIp || ['127.0.0.1', 'localhost', '::1'].includes(state.scanIp.toLowerCase());
+        if (localList && !state.scanIp && ['127.0.0.1', 'localhost', '::1'].includes(document.getElementById('scanIp').value.trim().toLowerCase())) state.scanIp = '127.0.0.1';
+        data.devices.forEach(function(device) {
+            if (!device.session_id) return;
+            if (!state.sessions[device.session_id]) createSessionTab(device.session_id, device.ip || '127.0.0.1', device.port, '');
+            if (localList && state.scanIp && (!state.connectedDevices[device.port] || state.connectedDevices[device.port] === device.session_id)) {
+                state.connectedDevices[device.port] = device.session_id;
+                if (!state.openPorts.includes(device.port)) state.openPorts.push(device.port);
+            }
+        });
+        state.openPorts.sort(function(a, b) { return a - b; });
+        renderDeviceList();
+        status.textContent = data.devices.map(function(device) {
+            return device.name + '（' + device.port + '）：' + device.status;
+        }).join('\n');
+    } catch (error) { status.textContent = error.message + '；如已建立会话，可重新执行以复用会话。'; }
+    finally { button.disabled = false; }
+}
+
+async function verifyTopologyInterfaces() {
+    var button = document.getElementById('topoVerifyButton');
+    var status = document.getElementById('topoVerifyStatus');
+    var progress = document.getElementById('topoVerifyProgress');
+    var log = document.getElementById('topoVerifyLog');
+    var logContent = document.getElementById('topoVerifyLogContent');
+    button.disabled = true;
+    progress.hidden = false;
+    progress.value = 0;
+    log.hidden = true;
+    logContent.textContent = '';
+    status.textContent = '正在启动验证…';
+    var lastRevision = 0;
+    try {
+        var response = await fetch('/api/topo/verify', {method: 'POST'});
+        var data = await response.json();
+        if (!response.ok) throw new Error(data.error || '无法启动验证');
+        await loadTopologyGraph();
+        while (true) {
+            response = await fetch('/api/topo/verify/progress', {cache: 'no-store'});
+            data = await response.json();
+            if (!response.ok || data.state === 'error') throw new Error(data.error || data.message || '验证失败');
+            progress.value = data.percent || 0;
+            status.textContent = data.message + '（' + progress.value + '%）';
+            if (data.state === 'running' && data.revision > lastRevision) {
+                await loadTopologyGraph();
+                lastRevision = data.revision;
+            }
+            if (data.state === 'done') {
+                logContent.textContent = data.devices.map(function(device) {
+                    return device.name + '（' + device.port + '）：' + device.status;
+                }).join('\n') + '\n未确认的连线显示待验证；请检查端口 LLDP 和设备名称。配置未自动保存。';
+                log.hidden = false;
+                log.open = false;
+                var summary = '已验证 ' + data.verified_count + ' 条连线';
+                status.textContent = summary + '，正在更新互联信息…';
+                await loadTopologyGraph(true);
+                status.textContent = summary + '，互联信息已更新。';
+                break;
+            }
+            await new Promise(function(resolve) { setTimeout(resolve, 1000); });
+        }
+    } catch (error) { status.textContent = error.message; }
+    finally { button.disabled = false; }
 }
 
 async function clearTopology() {
@@ -732,6 +848,7 @@ function renderTopologyGraph(data) {
     svg.replaceChildren();
     var devices = Array.isArray(data.devices) ? data.devices : [];
     var links = Array.isArray(data.connections) ? data.connections : [];
+    renderConnections(devices, links, data.revision);
     packetLinks = {};
     traceEdges = {};
     var names = new Map(devices.map(function(device) { return [device.id, device.name]; }));
@@ -742,6 +859,7 @@ function renderTopologyGraph(data) {
     });
     renderPackets();
     if (!data.loaded || !devices.length) {
+        graphFit = null; graphBox = null; graphSignature = null;
         empty.hidden = false;
         empty.textContent = data.loaded ? "拓扑中没有可显示的设备" : "上传拓扑文件后显示设备与连线";
         stats.textContent = "";
@@ -763,7 +881,13 @@ function renderTopologyGraph(data) {
     var points = Array.from(positions.values());
     var minX = Math.min.apply(null, points.map(p => p.x)) - 85, maxX = Math.max.apply(null, points.map(p => p.x)) + 85;
     var minY = Math.min.apply(null, points.map(p => p.y)) - 70, maxY = Math.max.apply(null, points.map(p => p.y)) + 85;
-    svg.setAttribute("viewBox", [minX, minY, maxX - minX, maxY - minY].join(" "));
+    var signature = JSON.stringify([data.filename, devices, links.map(function(link) { return [link.source_id, link.target_id, link.link_count]; })]);
+    if (!graphBox || graphSignature !== signature) {
+        graphFit = {x: minX, y: minY, width: maxX - minX, height: maxY - minY};
+        graphBox = Object.assign({}, graphFit);
+    }
+    graphSignature = signature;
+    applyTopologyView();
     var count = 0;
     links.forEach(function(link, linkIndex) {
         var source = positions.get(link.source_id), target = positions.get(link.target_id);
@@ -782,13 +906,160 @@ function renderTopologyGraph(data) {
     devices.forEach(function(device) {
         var p = positions.get(device.id), group = make("g", { class: "graph-node", transform: "translate(" + p.x + " " + p.y + ")" });
         var title = make("title"); title.textContent = (device.name || "设备") + (device.model ? " · " + device.model : ""); group.appendChild(title);
-        group.appendChild(make("rect", { x: -24, y: -20, width: 48, height: 40, rx: 8 }));
-        var icon = make("text", { x: 0, y: 7, class: "graph-icon" }); icon.textContent = "↔"; group.appendChild(icon);
+        var modelName = String(device.model || '').toUpperCase();
+        var category = String(device.category || '');
+        var router = /^AR\d/.test(modelName) || category.indexOf('路由器') !== -1;
+        var isSwitch = /^S\d/.test(modelName) || category.indexOf('交换机') !== -1;
+        if (router) {
+            group.appendChild(make('circle', {cx: 0, cy: 0, r: 22, class: 'device-outline'}));
+            group.appendChild(make('path', {d: 'M -14 -7 H 10 M 6 -11 L 10 -7 L 6 -3 M 14 7 H -10 M -6 3 L -10 7 L -6 11', class: 'device-mark'}));
+        } else if (isSwitch) {
+            group.appendChild(make('rect', {x: -26, y: -16, width: 52, height: 32, rx: 4, class: 'device-outline switch-outline'}));
+            group.appendChild(make('path', {d: 'M -17 -5 H 13 M 9 -9 L 13 -5 L 9 -1 M 17 6 H -13 M -9 2 L -13 6 L -9 10', class: 'device-mark switch-mark'}));
+        } else {
+            group.appendChild(make('rect', {x: -22, y: -19, width: 44, height: 38, rx: 5, class: 'device-outline'}));
+            var icon = make('text', {x: 0, y: 5, class: 'graph-model'}); icon.textContent = '设备'; group.appendChild(icon);
+        }
         var name = make("text", { x: 0, y: 37 }); name.textContent = device.name || "设备"; group.appendChild(name);
         var model = make("text", { x: 0, y: 51, class: "graph-model" }); model.textContent = device.model || ""; group.appendChild(model);
         svg.appendChild(group);
     });
     stats.textContent = devices.length + " 台设备 · " + count + " 条连线";
+}
+
+function renderConnections(devices, links, revision) {
+    var container = document.getElementById('connectionList');
+    var count = document.getElementById('connectionCount');
+    var names = new Map(devices.map(function(device) { return [device.id, device.name || device.id]; }));
+    container.replaceChildren();
+    var total = 0;
+    var verifiedItems = [], manualItems = [], candidateItems = [], pendingItems = [];
+    links.forEach(function(link, linkIndex) {
+        var pairs = Array.isArray(link.interface_pairs) ? link.interface_pairs : [];
+        var editable = pairs.length > 0;
+        if (!pairs.length) pairs = [{}];
+        pairs.forEach(function(pair, pairIndex) {
+            total++;
+            var item = document.createElement('div'); item.className = 'connection-item';
+            var heading = document.createElement('strong');
+            heading.textContent = (names.get(link.source_id) || link.source_id || '未知设备') + ' ↔ ' + (names.get(link.target_id) || link.target_id || '未知设备');
+            var detail = document.createElement('div');
+            if (pair.manual) {
+                detail.textContent = (pair.manual.source_interface || '未填写') + ' ↔ ' + (pair.manual.target_interface || '未填写') + '（手动填写，未经验证）';
+                manualItems.push(item);
+            } else if (pair.verified && pair.verified.source_interface && pair.verified.target_interface) {
+                detail.textContent = pair.verified.source_interface + ' ↔ ' + pair.verified.target_interface + '（双向 LLDP 已验证）' + (pair.line_type ? ' · ' + pair.line_type : '');
+                verifiedItems.push(item);
+            } else if (pair.candidate && pair.candidate.source_interface && pair.candidate.target_interface) {
+                detail.textContent = pair.candidate.source_interface + ' ↔ ' + pair.candidate.target_interface + '（双向 LLDP 候选；其他设备身份未确认）' + (pair.line_type ? ' · ' + pair.line_type : '');
+                candidateItems.push(item);
+            } else {
+                detail.textContent = '待验证';
+                pendingItems.push(item);
+            }
+            item.append(heading, detail);
+            if (pair.manual && pair.verified) {
+                var auto = document.createElement('div');
+                auto.textContent = 'LLDP：' + pair.verified.source_interface + ' ↔ ' + pair.verified.target_interface + '（已验证）';
+                item.appendChild(auto);
+            }
+            if (editable) {
+                var editor = document.createElement('details'); editor.className = 'connection-editor';
+                var summary = document.createElement('summary'); summary.textContent = pair.manual ? '编辑手动接口' : '手动填写接口';
+                var form = document.createElement('form');
+                function field(labelText, value) {
+                    var label = document.createElement('label'); label.textContent = labelText;
+                    var input = document.createElement('input'); input.type = 'text'; input.maxLength = 64;
+                    input.placeholder = '例如 GE0/0/0'; input.value = value || '';
+                    label.appendChild(input); form.appendChild(label); return input;
+                }
+                var source = field((names.get(link.source_id) || '起点') + ' 接口', pair.manual && pair.manual.source_interface);
+                var target = field((names.get(link.target_id) || '终点') + ' 接口', pair.manual && pair.manual.target_interface);
+                var actions = document.createElement('div'); actions.className = 'connection-editor-actions';
+                var save = document.createElement('button'); save.type = 'submit'; save.textContent = '保存';
+                var error = document.createElement('div'); error.className = 'connection-editor-error'; error.setAttribute('aria-live', 'polite');
+                actions.appendChild(save);
+                var payload = {revision: revision, link_index: linkIndex, pair_index: pairIndex, source_id: link.source_id, target_id: link.target_id};
+                async function submitManual(method) {
+                    save.disabled = true;
+                    try {
+                        var body = Object.assign({}, payload);
+                        if (method === 'POST') { body.source_interface = source.value; body.target_interface = target.value; }
+                        var response = await fetch('/api/topo/manual-interfaces', {method: method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+                        var data = await response.json();
+                        if (!response.ok) throw new Error(data.error || '保存失败');
+                        await loadTopologyGraph(true);
+                    } catch (err) { error.textContent = err.message; save.disabled = false; }
+                }
+                form.addEventListener('submit', function(event) { event.preventDefault(); submitManual('POST'); });
+                if (pair.manual) {
+                    var clear = document.createElement('button'); clear.type = 'button'; clear.textContent = '清除手动填写';
+                    clear.addEventListener('click', function() { submitManual('DELETE'); });
+                    actions.appendChild(clear);
+                }
+                form.append(actions, error); editor.append(summary, form); item.appendChild(editor);
+            }
+        });
+    });
+    verifiedItems.concat(manualItems, candidateItems, pendingItems).forEach(function(item) { container.appendChild(item); });
+    count.textContent = total ? '· ' + total + ' 条' : '';
+    if (!total) {
+        var empty = document.createElement('div'); empty.className = 'connections-empty';
+        empty.textContent = devices.length ? '拓扑中没有连线' : '上传拓扑后显示连线';
+        container.appendChild(empty);
+    }
+}
+
+function applyTopologyView() {
+    if (graphBox) document.getElementById('topologyGraph').setAttribute('viewBox', [graphBox.x, graphBox.y, graphBox.width, graphBox.height].join(' '));
+}
+
+function zoomTopology(factor, anchor) {
+    if (!graphBox || !graphFit) return;
+    var width = Math.max(graphFit.width / 8, Math.min(graphFit.width * 3, graphBox.width / factor));
+    var scale = width / graphBox.width;
+    var x = anchor ? anchor.x : graphBox.x + graphBox.width / 2;
+    var y = anchor ? anchor.y : graphBox.y + graphBox.height / 2;
+    graphBox = {x: x - (x - graphBox.x) * scale, y: y - (y - graphBox.y) * scale,
+                width: width, height: graphBox.height * scale};
+    applyTopologyView();
+}
+
+function resetTopologyZoom() {
+    if (graphFit) { graphBox = Object.assign({}, graphFit); applyTopologyView(); }
+}
+
+function initTopologyInteraction() {
+    var svg = document.getElementById('topologyGraph'), drag = null;
+    function graphPoint(x, y) {
+        var matrix = svg.getScreenCTM();
+        if (!matrix) return null;
+        var point = svg.createSVGPoint(); point.x = x; point.y = y;
+        return point.matrixTransform(matrix.inverse());
+    }
+    svg.addEventListener('wheel', function(event) {
+        if (!graphBox) return;
+        var point = graphPoint(event.clientX, event.clientY);
+        if (!point) return;
+        event.preventDefault();
+        zoomTopology(event.deltaY < 0 ? 1.15 : 1 / 1.15, point);
+    }, {passive: false});
+    svg.addEventListener('pointerdown', function(event) {
+        if (!graphBox || event.button !== 0) return;
+        drag = {id: event.pointerId, x: event.clientX, y: event.clientY};
+        svg.setPointerCapture(event.pointerId); svg.classList.add('dragging'); event.preventDefault();
+    });
+    svg.addEventListener('pointermove', function(event) {
+        if (!drag || drag.id !== event.pointerId || !graphBox) return;
+        var from = graphPoint(drag.x, drag.y), to = graphPoint(event.clientX, event.clientY);
+        if (!from || !to) return;
+        graphBox.x -= to.x - from.x; graphBox.y -= to.y - from.y;
+        drag.x = event.clientX; drag.y = event.clientY; applyTopologyView();
+    });
+    function endDrag(event) { if (drag && drag.id === event.pointerId) { drag = null; svg.classList.remove('dragging'); } }
+    svg.addEventListener('pointerup', endDrag);
+    svg.addEventListener('pointercancel', endDrag);
+    svg.addEventListener('lostpointercapture', endDrag);
 }
 
 async function loadTrafficInterfaces() {
@@ -810,6 +1081,7 @@ async function loadTrafficInterfaces() {
 async function toggleTraffic() {
     if (trafficBusy) return;
     trafficBusy = true;
+    trafficError = '';
     var button = document.getElementById('trafficButton');
     button.disabled = true;
     try {
@@ -827,7 +1099,7 @@ async function toggleTraffic() {
             renderPackets();
         }
         await refreshTrafficStatus();
-    } catch (error) { document.getElementById('trafficStatus').textContent = error.message; }
+    } catch (error) { trafficError = error.message; document.getElementById('trafficStatus').textContent = error.message; }
     finally { trafficBusy = false; button.disabled = false; }
 }
 
@@ -838,10 +1110,10 @@ async function refreshTrafficStatus() {
         var data = await response.json();
         trafficRunning = data.running;
         document.getElementById('trafficButton').textContent = trafficRunning ? '停止监控' : '开始监控';
-        document.getElementById('trafficStatus').textContent = data.message;
+        document.getElementById('trafficStatus').textContent = !trafficRunning && trafficError ? trafficError : data.message;
         document.querySelectorAll('.graph-traffic').forEach(function(label) {
             var rate = data.rates[label.getAttribute('data-link-id')];
-            label.textContent = rate ? rate.pps.toFixed(1) + ' 包/秒 · ' + (rate.bps / 1000).toFixed(1) + ' kbit/s' : '';
+            label.textContent = rate ? (rate.endpoints === 1 ? '单端 ' : '') + rate.pps.toFixed(1) + ' 包/秒 · ' + (rate.bps / 1000).toFixed(1) + ' kbit/s' : (trafficRunning ? '未覆盖' : '');
         });
         document.querySelectorAll('.graph-link').forEach(function(link) {
             var rate = data.rates[link.getAttribute('data-link-id')];
@@ -1023,10 +1295,12 @@ async function checkMcpStatus() {
 }
 
 document.addEventListener("DOMContentLoaded", function() {
+    initTopologyInteraction();
     initTheme();
     initChatResize();
     document.getElementById('chatForm').addEventListener('submit', submitChat);
     document.getElementById('chatSettings').addEventListener('submit', saveChatSettings);
+    document.getElementById('aiTemplate').addEventListener('change', applyChatTemplate);
     renderHistory();
     checkMcpStatus();
     loadTopologyGraph();

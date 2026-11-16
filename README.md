@@ -6,7 +6,7 @@ Learn to eNSP 是面向 eNSP 网络模拟环境的学习工具，提供网页界
 
 本项目基于 [llz-2002/ensptomcpfortrae](https://github.com/llz-2002/ensptomcpfortrae/tree/main) 的原有内容修改、扩展而来。感谢原项目作者的工作。
 
-当前版本定义为 **2.5**，项目代码位于 [mcpenspv2](mcpenspv2/) 目录。
+当前版本定义为 **2.5**，项目代码位于 [LearnToeNSP2.5](LearnToeNSP2.5/) 目录。近期改动见 [更新记录](CHANGELOG.md)。
 
 ## 2.5 功能
 
@@ -22,12 +22,12 @@ Learn to eNSP 是面向 eNSP 网络模拟环境的学习工具，提供网页界
 在 Windows PowerShell 中进入项目目录，安装依赖并启动服务：
 
 ```powershell
-cd mcpenspv2
+cd LearnToeNSP2.5
 python -m pip install -r requirements.txt
 python app.py
 ```
 
-浏览器访问 <http://127.0.0.1:5000>，本机 MCP SSE 地址为 <http://127.0.0.1:5001/sse>。完整的依赖、使用步骤和 MCP 客户端配置见 [mcpenspv2 使用文档](mcpenspv2/README.md)。
+浏览器访问 <http://127.0.0.1:5000>，本机 MCP SSE 地址为 <http://127.0.0.1:5001/sse>。完整的依赖、使用步骤和 MCP 客户端配置见 [使用文档](LearnToeNSP2.5/README.md)。
 
 ## 使用提示
 
