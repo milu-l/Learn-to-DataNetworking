@@ -385,7 +385,7 @@ def _start_mcp_sse():
 def run_server(host="0.0.0.0", port=5000):
     banner = f"""
 {'='*60}
-  eNSP Telnet Manager
+  Learn to eNSP
   Web 界面: http://{host}:{port}
   MCP SSE:  http://{host}:5001/sse
 {'='*60}

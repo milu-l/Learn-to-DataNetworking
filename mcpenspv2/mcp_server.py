@@ -8,7 +8,7 @@ from mcp_tools import register_tools
 
 def create_mcp_server():
     mcp = FastMCP(
-        name="eNSP Telnet Manager",
+        name="Learn to eNSP",
         instructions="通过 MCP 协议管理 eNSP 模拟器中的网络设备，支持端口扫描、Telnet 连接、命令执行等功能"
     )
     register_tools(mcp)
@@ -18,7 +18,7 @@ def create_mcp_server():
 def run_sse():
     mcp = create_mcp_server()
     print(f"\n{'='*60}")
-    print(f"  eNSP Telnet Manager - MCP SSE 模式")
+    print(f"  Learn to eNSP - MCP SSE 模式")
     print(f"  MCP SSE 端点: http://0.0.0.0:5001/sse")
     print(f"  MCP 消息端点: http://0.0.0.0:5001/messages")
     print(f"{'='*60}\n")
