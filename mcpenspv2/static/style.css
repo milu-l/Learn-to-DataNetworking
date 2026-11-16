@@ -459,6 +459,29 @@ input[type="number"]::-webkit-outer-spin-button {
 .workspace-view { flex: 1; min-height: 0; }
 .workspace-view[hidden] { display: none; }
 .terminal-view, .topology-view { display: flex; flex-direction: column; }
+.chat-view { display: flex; flex-direction: column; flex: 0 0 360px; width: 360px; min-width: 0; min-height: 0; padding: 14px; gap: 10px; border-left: 1px solid var(--border); background: var(--bg-surface); }
+.chat-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.chat-heading h2 { font-size: 14px; color: var(--text-primary); }
+.chat-heading span { font-size: 11px; color: var(--accent-purple); }
+.chat-note { color: var(--text-secondary); font-size: 12px; }
+.chat-messages { flex: 1; min-height: 0; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 12px; background: var(--bg-input); }
+.chat-message { margin-bottom: 10px; padding: 10px 12px; border-radius: 6px; background: var(--bg-elevated); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.chat-message.user { border-left: 3px solid var(--accent-blue); }
+.chat-message.assistant { border-left: 3px solid var(--accent-green); }
+.chat-message.tool { color: var(--text-secondary); font-size: 11px; }
+.chat-approval { padding: 10px; background: var(--bg-elevated); border: 1px solid var(--accent-amber); border-radius: 6px; }
+.chat-approval[hidden] { display: none; }
+.chat-approval pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 130px; overflow: auto; margin-bottom: 8px; }
+.chat-form { display: flex; gap: 8px; }
+.chat-form textarea { flex: 1; min-width: 0; max-height: 160px; resize: vertical; color: var(--text-primary); background: var(--bg-input); border: 1px solid var(--border-active); border-radius: 5px; padding: 9px; font: inherit; }
+.chat-form button { flex-shrink: 0; }
+@media (max-width: 1100px) {
+    .main { overflow-x: auto; }
+    .sidebar { flex: 0 0 250px; width: 250px; min-width: 250px; }
+    .terminal-section { flex: 1 0 380px; }
+    .chat-view { flex: 0 0 300px; width: 300px; }
+}
+.chat-form button, .chat-approval button { color: var(--text-primary); background: var(--bg-elevated); border: 1px solid var(--border-active); border-radius: 4px; padding: 8px 14px; cursor: pointer; }
 .topology-view { padding: 16px; }
 .graph-heading { display: flex; justify-content: space-between; gap: 12px; padding: 12px 14px; color: var(--text-secondary); background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px 6px 0 0; font-size: 12px; }
 .graph-canvas { flex: 1; min-height: 0; position: relative; overflow: hidden; border: 1px solid var(--border); border-top: 0; border-radius: 0 0 6px 6px; background-color: var(--bg-input); background-image: radial-gradient(var(--border-active) 1px, transparent 1px); background-size: 20px 20px; }

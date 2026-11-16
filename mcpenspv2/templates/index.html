@@ -153,6 +153,13 @@
                     </section>
                 </div>
             </section>
+            <aside id="chatView" class="chat-view" aria-label="AI 对话">
+                <div class="chat-heading"><h2>AI 对话</h2><span>MCP 助手</span></div>
+                <div class="chat-note">AI 可通过 MCP 查询和操作设备。工具结果可能发送给所配置的 AI 服务；操作类调用需确认。</div>
+                <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
+                <div id="chatApproval" class="chat-approval" hidden><pre id="chatApprovalText"></pre><button type="button" onclick="confirmChatTool(true)">执行</button> <button type="button" onclick="confirmChatTool(false)">取消</button></div>
+                <form id="chatForm" class="chat-form"><textarea id="chatInput" rows="3" maxlength="8000" placeholder="例如：查看当前连接的设备，检查 AR1 的接口状态"></textarea><button type="submit" id="chatSend">发送</button></form>
+            </aside>
         </main>
     </div>
 

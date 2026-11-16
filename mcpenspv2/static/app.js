@@ -15,6 +15,67 @@ let packetLinks = {};
 let traceEdges = {};
 let traceSelection = null;
 let traceAnimation = null;
+let chatHistory = [];
+let chatPending = null;
+let chatBusy = false;
+
+function appendChat(role, text) {
+    var node = document.createElement('div');
+    node.className = 'chat-message ' + role;
+    node.textContent = (role === 'user' ? '你：' : role === 'tool' ? 'MCP：' : 'AI：') + text;
+    var container = document.getElementById('chatMessages');
+    container.appendChild(node);
+    container.scrollTop = container.scrollHeight;
+}
+
+async function chatRequest(url, body) {
+    chatBusy = true;
+    document.getElementById('chatSend').disabled = true;
+    try {
+        var response = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+        var data = await response.json();
+        if (!response.ok) throw new Error(data.error || '请求失败');
+        (data.steps || []).forEach(function(step) { appendChat('tool', step.name + ' ' + JSON.stringify(step.arguments) + '\n' + step.result); });
+        if (data.pending) {
+            chatPending = data.pending;
+            document.getElementById('chatApprovalText').textContent = '确认执行 MCP 工具：' + data.pending.name + '\n' + JSON.stringify(data.pending.arguments, null, 2);
+            document.getElementById('chatApproval').hidden = false;
+        } else {
+            chatPending = null;
+            document.getElementById('chatApproval').hidden = true;
+            appendChat('assistant', data.reply || '无回复');
+            chatHistory.push({role: 'assistant', content: data.reply || '无回复'});
+        }
+    } catch (error) {
+        appendChat('assistant', '请求失败：' + error.message + '。如果刚才执行过工具，请先检查设备状态再重试。');
+        chatPending = null;
+        document.getElementById('chatApproval').hidden = true;
+        chatHistory.push({role: 'assistant', content: '请求未完成，请检查设备状态。'});
+    } finally {
+        chatBusy = false;
+        document.getElementById('chatSend').disabled = !!chatPending;
+    }
+}
+
+function confirmChatTool(allow) {
+    if (chatBusy || !chatPending) return;
+    var token = chatPending.token;
+    chatPending = null;
+    document.getElementById('chatApproval').hidden = true;
+    chatRequest('/api/chat/confirm', {token: token, allow: allow});
+}
+
+function submitChat(event) {
+    event.preventDefault();
+    if (chatBusy || chatPending) return;
+    var input = document.getElementById('chatInput'), message = input.value.trim();
+    if (!message) return;
+    input.value = '';
+    appendChat('user', message);
+    chatHistory.push({role: 'user', content: message});
+    chatHistory = chatHistory.slice(-29);
+    chatRequest('/api/chat', {messages: chatHistory});
+}
 
 function loadHistory() {
     try {
@@ -488,7 +549,7 @@ function handleTopoUpload(event) {
 
 function switchWorkspaceView(view) {
     var isTopology = view === "topology";
-    document.getElementById("terminalView").hidden = isTopology;
+    document.getElementById("terminalView").hidden = view !== "terminal";
     document.getElementById("topologyView").hidden = !isTopology;
     ["terminal", "topology"].forEach(function(name) {
         var tab = document.getElementById(name + "ViewTab");
@@ -856,6 +917,7 @@ async function checkMcpStatus() {
 }
 
 document.addEventListener("DOMContentLoaded", function() {
+    document.getElementById('chatForm').addEventListener('submit', submitChat);
     renderHistory();
     checkMcpStatus();
     loadTopologyGraph();

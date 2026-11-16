@@ -15,9 +15,34 @@ from topo_service import parse_topology_from_content, generate_ai_markdown, gene
 from topo_service import get_topo_data, get_topo_filename, set_topo_data, clear_topo_data
 from topo_service import get_cached_report, set_cached_report
 from traffic_service import traffic_monitor, list_interfaces
+from urllib.parse import urlsplit
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 CORS(app)
+
+
+@app.route('/api/chat', methods=['POST'])
+@app.route('/api/chat/confirm', methods=['POST'])
+def api_chat():
+    # AI tool calls are available only from this computer and its own web page.
+    origin = request.headers.get('Origin')
+    if request.remote_addr not in ('127.0.0.1', '::1') or (origin and urlsplit(origin).netloc != request.host):
+        return jsonify({'error': 'AI 对话仅允许本机页面访问'}), 403
+    from chat_service import chat, confirm
+    data = request.get_json(silent=True) or {}
+    try:
+        if request.path.endswith('/confirm'):
+            if not isinstance(data.get('token'), str) or not isinstance(data.get('allow'), bool):
+                raise ValueError('确认参数无效')
+            result = confirm(data['token'], data['allow'])
+        else:
+            result = chat(data.get('messages'))
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception:
+        app.logger.exception('AI chat failed')
+        return jsonify({'error': '无法连接 MCP 服务或处理 AI 请求，请检查服务状态'}), 503
 
 
 @app.route("/")
