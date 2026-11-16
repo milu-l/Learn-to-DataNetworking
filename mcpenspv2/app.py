@@ -21,12 +21,35 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 CORS(app)
 
 
+def is_local_chat_request():
+    origin = request.headers.get('Origin')
+    try:
+        host = urlsplit('http://' + request.host).hostname
+        return (request.remote_addr in ('127.0.0.1', '::1') and host in ('localhost', '127.0.0.1', '::1')
+                and (not origin or urlsplit(origin).netloc == request.host))
+    except ValueError:
+        return False
+
+
+@app.route('/api/chat/config', methods=['GET', 'POST'])
+def api_chat_config():
+    if not is_local_chat_request():
+        return jsonify({'error': 'AI 设置仅允许本机页面访问'}), 403
+    from chat_service import get_config, set_config
+    try:
+        data = get_config() if request.method == 'GET' else set_config(request.get_json(silent=True))
+        response = jsonify(data)
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+
 @app.route('/api/chat', methods=['POST'])
 @app.route('/api/chat/confirm', methods=['POST'])
 def api_chat():
     # AI tool calls are available only from this computer and its own web page.
-    origin = request.headers.get('Origin')
-    if request.remote_addr not in ('127.0.0.1', '::1') or (origin and urlsplit(origin).netloc != request.host):
+    if not is_local_chat_request():
         return jsonify({'error': 'AI 对话仅允许本机页面访问'}), 403
     from chat_service import chat, confirm
     data = request.get_json(silent=True) or {}
@@ -36,7 +59,7 @@ def api_chat():
                 raise ValueError('确认参数无效')
             result = confirm(data['token'], data['allow'])
         else:
-            result = chat(data.get('messages'))
+            result = chat(data.get('messages'), data.get('auto_execute', False))
         return jsonify(result)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400

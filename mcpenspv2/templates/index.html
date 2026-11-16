@@ -14,6 +14,7 @@
                 <h1>eNSP Telnet Manager</h1>
             </div>
             <div class="header-right">
+                <button type="button" id="themeToggle" class="theme-toggle" aria-label="切换主题">浅色主题</button>
                 <span class="status-dot" id="mcpStatusDot"></span>
                 <span class="mcp-label">MCP</span>
                 <span class="mcp-status" id="mcpStatusText">检测中</span>
@@ -153,9 +154,19 @@
                     </section>
                 </div>
             </section>
+            <div id="chatResize" class="chat-resize" role="separator" tabindex="0" aria-label="调整 AI 对话栏宽度" aria-orientation="vertical" aria-controls="chatView" aria-valuemin="280" aria-valuemax="900" aria-valuenow="360" title="拖动调整宽度，也可使用左右方向键"></div>
             <aside id="chatView" class="chat-view" aria-label="AI 对话">
-                <div class="chat-heading"><h2>AI 对话</h2><span>MCP 助手</span></div>
-                <div class="chat-note">AI 可通过 MCP 查询和操作设备。工具结果可能发送给所配置的 AI 服务；操作类调用需确认。</div>
+                <div class="chat-heading"><h2>AI 对话</h2><button type="button" class="chat-settings-toggle" onclick="toggleChatSettings()" aria-controls="chatSettings" id="chatSettingsToggle" aria-expanded="false">AI 设置</button></div>
+                <div class="chat-note">AI 可自动检测已上传拓扑中的本机设备。对话和工具结果会发送给所配置的 AI 服务。</div>
+                <label class="chat-auto"><input id="chatAutoExecute" type="checkbox" checked> 默认自动执行 MCP 操作（含设备配置命令）</label>
+                <form id="chatSettings" class="chat-settings" hidden>
+                    <label>API 基础地址<input id="aiBaseUrl" type="url" required placeholder="https://服务地址/v1" autocomplete="off"></label>
+                    <label>模型名称<input id="aiModel" type="text" required maxlength="200" placeholder="模型名称" autocomplete="off"></label>
+                    <label>API 密钥<input id="aiApiKey" type="password" maxlength="4096" placeholder="留空保持现有密钥" autocomplete="new-password"></label>
+                    <label class="chat-clear-key"><input id="aiClearKey" type="checkbox"> 清除已保存的密钥</label>
+                    <div class="chat-settings-footer"><button type="submit" id="aiSave">保存设置</button><span id="aiSettingsStatus" aria-live="polite"></span></div>
+                    <small>仅在当前服务进程内保存，重启后恢复环境变量设置。远程地址需使用 HTTPS。</small>
+                </form>
                 <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
                 <div id="chatApproval" class="chat-approval" hidden><pre id="chatApprovalText"></pre><button type="button" onclick="confirmChatTool(true)">执行</button> <button type="button" onclick="confirmChatTool(false)">取消</button></div>
                 <form id="chatForm" class="chat-form"><textarea id="chatInput" rows="3" maxlength="8000" placeholder="例如：查看当前连接的设备，检查 AR1 的接口状态"></textarea><button type="submit" id="chatSend">发送</button></form>

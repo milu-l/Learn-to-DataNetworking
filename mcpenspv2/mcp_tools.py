@@ -8,7 +8,39 @@ from topo_service import get_topo_data, generate_ai_markdown, generate_readable_
 from urllib.request import urlopen
 from urllib.error import URLError
 import json
+import socket
 def register_tools(mcp):
+    @mcp.tool()
+    def detect_topology_devices() -> str:
+        """检测当前 Web 拓扑中设备的本机 Telnet 端口，并列出已有会话；不会发送设备命令。"""
+        try:
+            with urlopen('http://127.0.0.1:5000/api/topo/graph', timeout=5) as response:
+                topology = json.load(response)
+        except (URLError, OSError, json.JSONDecodeError):
+            return '无法读取 Web 拓扑，请确认 Web 服务正在运行。'
+        if not topology.get('loaded'):
+            return '尚未上传拓扑，请先在网页中上传拓扑文件。'
+        sessions = session_manager.list_sessions()
+        results = []
+        for device in topology.get('devices', []):
+            raw_port = str(device.get('com_port', ''))
+            if not raw_port.isdigit() or not 1 <= int(raw_port) <= 65535:
+                results.append({'name': device.get('name'), 'status': '拓扑未提供有效端口'})
+                continue
+            port = int(raw_port)
+            existing = next((s for s in sessions if s['ip'] in ('127.0.0.1', 'localhost', '::1') and s['port'] == port), None)
+            if existing:
+                status = '已连接'
+            else:
+                try:
+                    with socket.create_connection(('127.0.0.1', port), timeout=0.5):
+                        status = '端口开放'
+                except OSError:
+                    status = '端口不可用'
+            results.append({'name': device.get('name'), 'ip': '127.0.0.1', 'port': port,
+                            'status': status, 'session_id': existing['session_id'] if existing else None})
+        return json.dumps(results, ensure_ascii=False)
+
     @mcp.tool()
     def scan_ports(ip: str, start_port: int = 2000, end_port: int = 2099, timeout: int = 2) -> str:
         """扫描目标 IP 的端口范围，返回开放端口列表

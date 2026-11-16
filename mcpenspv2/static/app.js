@@ -19,6 +19,112 @@ let chatHistory = [];
 let chatPending = null;
 let chatBusy = false;
 
+function initTheme() {
+    var button = document.getElementById('themeToggle');
+    var theme = 'dark';
+    try { theme = localStorage.getItem('ensp_theme') === 'light' ? 'light' : 'dark'; } catch (_) {}
+    function apply(value) {
+        document.documentElement.dataset.theme = value;
+        button.textContent = value === 'dark' ? '浅色主题' : '深色主题';
+        button.setAttribute('aria-label', value === 'dark' ? '切换到浅色主题' : '切换到深色主题');
+    }
+    apply(theme);
+    button.addEventListener('click', function() {
+        theme = theme === 'dark' ? 'light' : 'dark';
+        apply(theme);
+        try { localStorage.setItem('ensp_theme', theme); } catch (_) {}
+    });
+}
+
+function initChatResize() {
+    var handle = document.getElementById('chatResize');
+    var panel = document.getElementById('chatView');
+    var width = 360;
+    try { var saved = Number(localStorage.getItem('ensp_chat_width')); if (Number.isFinite(saved) && saved >= 280 && saved <= 900) width = saved; } catch (_) {}
+    function apply(value) {
+        width = Math.max(280, Math.min(900, Math.round(value)));
+        panel.style.setProperty('--chat-width', width + 'px');
+        handle.setAttribute('aria-valuenow', String(width));
+        handle.setAttribute('aria-valuetext', width + ' 像素');
+    }
+    function save() { try { localStorage.setItem('ensp_chat_width', String(width)); } catch (_) {} }
+    apply(width);
+    var drag = null;
+    handle.addEventListener('pointerdown', function(event) {
+        if (event.button !== 0) return;
+        drag = { id: event.pointerId, startX: event.clientX, startWidth: width };
+        handle.setPointerCapture(event.pointerId);
+        document.body.classList.add('resizing-chat');
+        event.preventDefault();
+    });
+    handle.addEventListener('pointermove', function(event) {
+        if (drag && event.pointerId === drag.id) apply(drag.startWidth + drag.startX - event.clientX);
+    });
+    function finish(event) {
+        if (!drag || event.pointerId !== drag.id) return;
+        drag = null;
+        document.body.classList.remove('resizing-chat');
+        save();
+    }
+    handle.addEventListener('pointerup', finish);
+    handle.addEventListener('pointercancel', finish);
+    handle.addEventListener('lostpointercapture', finish);
+    handle.addEventListener('keydown', function(event) {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        apply(width + (event.key === 'ArrowLeft' ? 20 : -20));
+        save();
+        event.preventDefault();
+    });
+}
+
+function toggleChatSettings() {
+    var form = document.getElementById('chatSettings');
+    form.hidden = !form.hidden;
+    document.getElementById('chatSettingsToggle').setAttribute('aria-expanded', String(!form.hidden));
+    if (!form.hidden) loadChatSettings();
+}
+
+async function loadChatSettings() {
+    var status = document.getElementById('aiSettingsStatus');
+    try {
+        var response = await fetch('/api/chat/config', {cache: 'no-store'});
+        var data = await response.json();
+        if (!response.ok) throw new Error(data.error || '读取失败');
+        document.getElementById('aiBaseUrl').value = data.base_url;
+        document.getElementById('aiModel').value = data.model;
+        document.getElementById('aiApiKey').value = '';
+        document.getElementById('aiClearKey').checked = false;
+        status.textContent = data.has_api_key ? '已设置密钥' : '未设置密钥';
+    } catch (error) { status.textContent = error.message; }
+}
+
+async function saveChatSettings(event) {
+    event.preventDefault();
+    var button = document.getElementById('aiSave'), status = document.getElementById('aiSettingsStatus');
+    button.disabled = true;
+    try {
+        var response = await fetch('/api/chat/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+            base_url: document.getElementById('aiBaseUrl').value,
+            model: document.getElementById('aiModel').value,
+            api_key: document.getElementById('aiApiKey').value,
+            clear_api_key: document.getElementById('aiClearKey').checked
+        })});
+        var data = await response.json();
+        if (!response.ok) throw new Error(data.error || '保存失败');
+        document.getElementById('aiApiKey').value = '';
+        document.getElementById('aiClearKey').checked = false;
+        if (chatPending) {
+            chatPending = null;
+            document.getElementById('chatApproval').hidden = true;
+            document.getElementById('chatSend').disabled = false;
+            appendChat('assistant', 'AI 设置已更改，待确认的工具调用已取消，请重新发送请求。');
+            chatHistory.push({role: 'assistant', content: 'AI 设置已更改，待确认的工具调用已取消。'});
+        }
+        status.textContent = data.has_api_key ? '已保存，密钥已设置' : '已保存，未设置密钥';
+    } catch (error) { status.textContent = error.message; }
+    finally { button.disabled = false; }
+}
+
 function appendChat(role, text) {
     var node = document.createElement('div');
     node.className = 'chat-message ' + role;
@@ -74,7 +180,7 @@ function submitChat(event) {
     appendChat('user', message);
     chatHistory.push({role: 'user', content: message});
     chatHistory = chatHistory.slice(-29);
-    chatRequest('/api/chat', {messages: chatHistory});
+    chatRequest('/api/chat', {messages: chatHistory, auto_execute: document.getElementById('chatAutoExecute').checked});
 }
 
 function loadHistory() {
@@ -917,7 +1023,10 @@ async function checkMcpStatus() {
 }
 
 document.addEventListener("DOMContentLoaded", function() {
+    initTheme();
+    initChatResize();
     document.getElementById('chatForm').addEventListener('submit', submitChat);
+    document.getElementById('chatSettings').addEventListener('submit', saveChatSettings);
     renderHistory();
     checkMcpStatus();
     loadTopologyGraph();
