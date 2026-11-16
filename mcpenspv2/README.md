@@ -1,6 +1,6 @@
 # Learn to eNSP
 
-基于 Python 全栈开发的 eNSP 网络模拟器管理工具，提供 Web 界面和 MCP 协议两种交互方式，支持端口扫描、Telnet 设备连接、命令执行及拓扑文件解析分析。
+Learn to eNSP 是一款面向 eNSP 网络模拟环境的管理工具，通过网页和 MCP 接口提供设备连接、命令执行、拓扑分析、流量监控及 AI 辅助操作。
 
 ## 功能概览
 
@@ -12,6 +12,9 @@
 | 设备连接 | 通过 Telnet 连接设备，每个设备拥有独立的终端标签页 |
 | 命令执行 | 向已连接设备发送命令（如 `display version`）并实时查看返回结果 |
 | 拓扑分析 | 上传 eNSP 拓扑文件，自动解析生成报告和拓扑图 |
+| 流量和报文 | 在拓扑图上查看估算流量、数据包分析和慢放溯源 |
+| AI 对话 | 使用自然语言调用 MCP，辅助查询和操作设备 |
+| 界面设置 | 调整 AI 对话栏宽度，切换深色或浅色主题 |
 
 ### MCP 工具
 
@@ -30,26 +33,12 @@
 
 ### 1. 安装依赖
 
-```bash
-pip install -r requirements.txt
-```
-## MCP 客户端配置
-
-在 MCP 客户端（如 Claude Desktop）配置文件中添加：
-
-```json
-{
-  "mcpServers": {
-    "ensp-manager": {
-      "command": "python",
-      "args": ["mcp_server.py"],
-      "cwd": "e:\\Trae CN\\code\\code\\ensp"
-    }
-  }
-}
+```powershell
+python -m pip install -r requirements.txt
 ```
 
-具体配置可参考项目根目录下的 `mcp.json` 文件。
+在本目录执行命令。使用设备功能前，请先启动 eNSP 中的目标设备；流量监控还需要 Wireshark（包含 `tshark`）、Npcap 和可访问的 VirtualBox Host-Only 网卡。
+
 ### 2. 启动服务
 
 ```bash
@@ -68,23 +57,14 @@ python app.py
 
 浏览器打开 `http://localhost:5000` 即可使用 Web 界面。
 
-### 3. 单独启动 MCP（可选）
-
-```bash
-# stdio 模式（供 Claude Desktop 等本地 MCP 客户端使用）
-python mcp_server.py
-
-# SSE 模式（供远程 MCP 客户端使用）
-python mcp_server.py sse
-```
-
 ## 项目结构
 
 ```
-ensp/
+mcpenspv2/
 ├── app.py                 # 入口：Flask Web + MCP SSE 一体启动
 ├── mcp_server.py          # MCP 独立启动入口（stdio / sse）
 ├── mcp_tools.py           # MCP 工具注册
+├── chat_service.py        # AI 对话与 MCP 工具调用
 ├── mcp.json               # MCP 客户端配置文件
 ├── requirements.txt       # Python 依赖
 │
@@ -92,24 +72,25 @@ ensp/
 ├── telnet_service.py      # Telnet 连接管理
 ├── session_manager.py     # 会话生命周期管理
 ├── topo_service.py        # 拓扑解析、分析、缓存
+├── traffic_service.py     # 流量采集与数据包分析
 │
 ├── static/
 │   ├── app.js             # 前端交互逻辑
 │   └── style.css          # 前端样式
 │
-├── templates/
-│   └── index.html         # Web 页面模板
-│
-└── uploads/               # 上传目录（如有）
+└── templates/
+    └── index.html         # Web 页面模板
 ```
 
 ## 使用流程
 
 ### AI 对话与 MCP
 
-AI 对话支持配置 OpenAI 兼容的 Chat Completions 接口和支持工具调用的模型。启动 Web 服务前，在当前 PowerShell 中设置：
+AI 对话支持兼容 OpenAI Chat Completions 且支持工具调用的模型。可以在网页右侧「AI 设置」中填写 API 基础地址、模型名称和密钥。
 
-也可在网页右侧「AI 设置」中填写 API 基础地址、模型名称和密钥。网页设置只保存在当前 Web 服务进程的内存中，重启后恢复为环境变量的值；密钥不会在页面中回显。地址与模型为必填，密钥留空保留当前值，也可勾选清除；更改设置会取消待确认的工具调用。远程服务必须使用 HTTPS，本机服务可使用 HTTP。
+网页设置只保存在当前 Web 服务进程的内存中，重启后恢复为环境变量的值；密钥不会在页面中回显。地址与模型为必填，密钥留空保留当前值，也可勾选清除；更改设置会取消待确认的工具调用。远程服务必须使用 HTTPS，本机服务可使用 HTTP。
+
+也可以在启动服务前，通过 PowerShell 设置环境变量：
 
 ```powershell
 $env:ENSP_AI_BASE_URL = 'https://你的服务地址/v1'
@@ -118,7 +99,7 @@ $env:ENSP_AI_API_KEY = '你的密钥'
 python app.py
 ```
 
-密钥可按服务商方式安全设置为环境变量，不要写入仓库；无需密钥的本地服务可省略。地址应是 API 的基础路径，程序会追加 `/chat/completions`。打开「AI 对话」后输入需求，模型通过本机 MCP SSE 工具查询或操作设备，并可根据已上传拓扑的端口自动检测设备。默认勾选「自动执行」，操作类工具（包括设备配置命令）会直接运行；取消勾选后须逐次确认，取消或 5 分钟未确认即失效。对话仅保存在当前网页内存中，刷新后清空。
+密钥可按服务商方式安全设置为环境变量，不要写入仓库；无需密钥的本地服务可省略。地址应是 API 的基础路径，程序会追加 `/chat/completions`。打开「AI 对话」后输入需求，模型通过本机 MCP SSE 工具查询或操作设备，并可根据已上传拓扑的端口自动检测设备。**「自动执行」默认开启**：操作类工具（包括设备配置命令）会直接运行；取消勾选后须逐次确认，取消或 5 分钟未确认即失效。对话仅保存在当前网页内存中，刷新后清空。
 
 对话内容、已调用的工具结果和设备命令输出会发送给所配置的 AI 服务。AI 对话接口仅允许本机访问，Web 与 MCP SSE 服务都须正常运行。不同服务商对工具调用的兼容程度可能不同。
 
@@ -139,6 +120,8 @@ python app.py
 5. 点击"Mermaid图"查看可渲染的拓扑图代码
 6. 分析结果在服务运行期间缓存，MCP 工具 `get_topo_report` 可读取；重启 Web 服务后需重新上传拓扑
 
+报告中的接口名称和网络层级包含推断结果，执行设备配置前应以设备实际信息为准。可使用「删除」清除当前拓扑及报告。
+
 ### 拓扑流量监控
 
 安装 Wireshark 和 Npcap，启动 eNSP 设备并上传拓扑，打开「拓扑图」，选择 eNSP 使用的 VirtualBox Host-Only 网卡，点击「开始监控」。页面显示每条物理连线的每秒报文数和速率，再次点击可停止；上传新拓扑也会停止采集。
@@ -153,12 +136,39 @@ python app.py
 
 ## 跨进程数据共享
 
-拓扑与报告只保存在 Web 服务的内存中，重启后清空。独立的 MCP 进程通过本机 5000 端口读取当前 Web 服务中的报告，因此需要先启动 Web 服务并上传拓扑。上传新拓扑时报告缓存自动清空。
+拓扑与报告只保存在 Web 服务的内存中，重启后清空。独立的 MCP 进程通过本机 5000 端口读取当前 Web 服务中的报告，因此需要先启动 Web 服务并上传拓扑。上传新拓扑时报告缓存自动清空。独立 stdio 进程与 Web 服务的 Telnet 会话不共享。
 
 ## 技术要点
 
 - **默认扫描端口**：2000-2099（eNSP 设备 Telnet 端口默认范围）
-- **无连接数限制**：可同时连接任意数量的设备
+- **多设备会话**：可同时管理多个设备，实际数量受本机资源限制
 - **多 Tab 终端**：每个设备独立的输出区域和输入框
 - **拓扑报告**：仅在 Web 服务运行期间保存，MCP 通过本机 HTTP 接口读取
 - **Python 全栈**：Flask 后端 + 原生 HTML/CSS/JS 前端，零前端构建工具
+
+## MCP 客户端配置
+
+使用 `python app.py` 时，MCP SSE 与 Web 服务一同启动。支持 SSE 的客户端可连接 `http://127.0.0.1:5001/sse`。
+
+也可在本机使用 stdio 模式。以下配置仅作示例，请将 `cwd` 修改为你的 `mcpenspv2` 目录，并确保客户端能找到安装了项目依赖的 Python：
+
+```json
+{
+  "mcpServers": {
+    "ensp-manager": {
+      "command": "python",
+      "args": ["mcp_server.py"],
+      "cwd": "E:\\Documents\\GitHub\\Learn-to-ensp-mcp\\mcpenspv2"
+    }
+  }
+}
+```
+
+项目中的 `mcp.json` 可作为格式参考，但其路径可能来自其他环境，使用前请检查并修改。也可单独启动 MCP：
+
+```powershell
+python mcp_server.py       # stdio
+python mcp_server.py sse   # SSE，监听 5001 端口
+```
+
+独立 stdio 进程与 Web 服务的设备会话不共享；需要时请在同一 MCP 进程中连接设备。拓扑报告和拓扑设备检测通过本机 Web 服务读取，使用前需启动 `app.py` 并上传拓扑。`app.py` 已启动 MCP SSE 时，不要再启动独立 SSE 服务占用同一端口。
