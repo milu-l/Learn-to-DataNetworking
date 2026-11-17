@@ -8,6 +8,7 @@ let state = {
     scanIp: null,
     topologyNames: {}
 };
+let currentTopologyRevision = null;
 let trafficRunning = false;
 let trafficBusy = false;
 let trafficError = '';
@@ -155,6 +156,19 @@ async function saveChatSettings(event) {
     finally { button.disabled = false; }
 }
 
+async function testChatConnection() {
+    var button = document.getElementById('aiTest'), status = document.getElementById('aiSettingsStatus');
+    button.disabled = true;
+    status.textContent = '正在测试已保存的设置，不调用设备工具…';
+    try {
+        var response = await fetch('/api/chat/test', {method: 'POST'});
+        var data = await response.json();
+        if (!response.ok) throw new Error(data.error || '连接测试失败');
+        status.textContent = data.message;
+    } catch (error) { status.textContent = error.message; }
+    finally { button.disabled = false; }
+}
+
 function appendChat(role, text) {
     var node = document.createElement('div');
     node.className = 'chat-message ' + role;
@@ -162,6 +176,73 @@ function appendChat(role, text) {
     var container = document.getElementById('chatMessages');
     container.appendChild(node);
     container.scrollTop = container.scrollHeight;
+}
+
+var CHAT_STORAGE_KEY = 'learn_to_ensp_saved_chat_v1';
+
+function exportChatConversation() {
+    var status = document.getElementById('chatSaveStatus');
+    if (chatBusy || chatPending) { status.textContent = '请先完成当前请求或处理待确认操作'; return; }
+    var messages = Array.from(document.querySelectorAll('#chatMessages .chat-message'));
+    if (!messages.length) { status.textContent = '当前没有对话可导出'; return; }
+    try {
+        var content = 'Learn to eNSP AI 对话\n导出时间：' + new Date().toLocaleString() + '\n\n' +
+            messages.map(function(node) { return node.textContent; }).join('\n\n');
+        var url = URL.createObjectURL(new Blob(['\ufeff', content], {type: 'text/plain;charset=utf-8'}));
+        var link = document.createElement('a'); link.href = url; link.download = 'ensp-ai-对话.txt';
+        document.body.appendChild(link); link.click(); link.remove();
+        setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+        status.textContent = '对话已导出，文件可能包含设备信息';
+    } catch (error) { status.textContent = '导出失败，请检查浏览器下载设置'; }
+}
+
+function saveChatConversation() {
+    var status = document.getElementById('chatSaveStatus');
+    if (chatBusy || chatPending) { status.textContent = '请先完成当前请求或处理待确认操作'; return; }
+    var nodes = Array.from(document.querySelectorAll('#chatMessages .chat-message'));
+    if (!nodes.length) { status.textContent = '当前没有对话可保存'; return; }
+    var entries = nodes.map(function(node) {
+        return {role: node.classList.contains('user') ? 'user' : node.classList.contains('tool') ? 'tool' : 'assistant', text: node.textContent};
+    });
+    try {
+        localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify({version: 1, messages: entries, history: chatHistory, saved_at: new Date().toISOString()}));
+        status.textContent = '已保存到当前浏览器';
+    } catch (error) { status.textContent = '保存失败：浏览器存储不可用或空间不足'; }
+}
+
+function restoreChatConversation() {
+    var status = document.getElementById('chatSaveStatus');
+    if (chatBusy || chatPending) { status.textContent = '请先完成当前请求或处理待确认操作'; return; }
+    try {
+        var raw = localStorage.getItem(CHAT_STORAGE_KEY);
+        if (!raw) { status.textContent = '没有已保存的对话'; return; }
+        var saved = JSON.parse(raw);
+        if (!saved || saved.version !== 1 || !Array.isArray(saved.messages) || !Array.isArray(saved.history) ||
+            !saved.messages.every(function(m) { return m && ['user', 'assistant', 'tool'].includes(m.role) && typeof m.text === 'string'; }) ||
+            saved.history.length > 30 || !saved.history.every(function(m) { return m && ['user', 'assistant'].includes(m.role) && typeof m.content === 'string'; })) {
+            throw new Error('format');
+        }
+        if (document.getElementById('chatMessages').children.length && !confirm('恢复已保存的对话会替换当前页面中的对话，是否继续？')) return;
+        var container = document.getElementById('chatMessages');
+        container.replaceChildren();
+        saved.messages.forEach(function(message) {
+            var node = document.createElement('div'); node.className = 'chat-message ' + message.role;
+            node.textContent = message.text; container.appendChild(node);
+        });
+        chatHistory = saved.history.map(function(message) { return {role: message.role, content: message.content}; });
+        container.scrollTop = container.scrollHeight;
+        status.textContent = '已恢复对话；设备会话和待确认操作不会恢复';
+    } catch (error) { status.textContent = '无法恢复对话：保存内容无效或浏览器存储不可用'; }
+}
+
+function deleteSavedChatConversation() {
+    var status = document.getElementById('chatSaveStatus');
+    try {
+        if (!localStorage.getItem(CHAT_STORAGE_KEY)) { status.textContent = '没有已保存的对话'; return; }
+        if (!confirm('确定删除浏览器中保存的 AI 对话吗？')) return;
+        localStorage.removeItem(CHAT_STORAGE_KEY);
+        status.textContent = '已删除保存的对话';
+    } catch (error) { status.textContent = '删除失败：浏览器存储不可用'; }
 }
 
 async function chatRequest(url, body) {
@@ -705,6 +786,7 @@ function loadTopologyGraph(throwOnError) {
     .then(function(data) {
         renderTopologyGraph(data);
         if (!data.loaded) { resetTopologyDisplay(); if (throwOnError) throw new Error('拓扑已删除，请重新上传'); return; }
+        currentTopologyRevision = data.revision;
         state.topologyNames = {};
         (data.devices || []).forEach(function(device) {
             if (/^\d+$/.test(String(device.com_port)) && device.name) state.topologyNames[Number(device.com_port)] = device.name;
@@ -722,6 +804,8 @@ function loadTopologyGraph(throwOnError) {
 }
 
 function resetTopologyDisplay() {
+    currentTopologyRevision = null;
+    document.getElementById('interfaceArchiveStatus').textContent = '';
     stopTrace();
     traceSelection = null;
     showPacketAnalysis(null);
@@ -748,6 +832,37 @@ function resetTopologyDisplay() {
     document.getElementById('topoFileInput').value = '';
     document.getElementById('clearTopologyButton').hidden = true;
     renderTopologyGraph({loaded: false});
+}
+
+async function exportTopologyInterfaces() {
+    var status = document.getElementById('interfaceArchiveStatus');
+    try {
+        var response = await fetch('/api/topo/interfaces-archive', {cache: 'no-store'});
+        var data = await response.json();
+        if (!response.ok) throw new Error(data.error || '导出失败');
+        var url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'}));
+        var link = document.createElement('a'); link.href = url; link.download = 'ensp-互联信息.json';
+        document.body.appendChild(link); link.click(); link.remove();
+        setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+        status.textContent = '已导出 ' + data.links.length + ' 条链路记录，请妥善保存文件。';
+    } catch (error) { status.textContent = error.message; }
+}
+
+async function importTopologyInterfaces(event) {
+    var input = event.target, file = input.files[0];
+    var status = document.getElementById('interfaceArchiveStatus');
+    if (!file) return;
+    try {
+        if (file.size > 2 * 1024 * 1024) throw new Error('文件不能超过 2 MB');
+        var revision = currentTopologyRevision;
+        var archive = JSON.parse(await file.text());
+        var response = await fetch('/api/topo/interfaces-archive', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({revision: revision, archive: archive})});
+        var data = await response.json();
+        if (!response.ok) throw new Error(data.error || '导入失败');
+        await loadTopologyGraph(true);
+        status.textContent = '已导入 ' + data.restored_count + ' 条历史验证记录和 ' + data.manual_count + ' 条手动记录。历史记录未重新验证。';
+    } catch (error) { status.textContent = error instanceof SyntaxError ? '文件不是有效的 JSON' : error.message; }
+    finally { input.value = ''; }
 }
 
 async function connectTopologyDevices() {
@@ -950,6 +1065,9 @@ function renderConnections(devices, links, revision) {
             } else if (pair.verified && pair.verified.source_interface && pair.verified.target_interface) {
                 detail.textContent = pair.verified.source_interface + ' ↔ ' + pair.verified.target_interface + '（双向 LLDP 已验证）' + (pair.line_type ? ' · ' + pair.line_type : '');
                 verifiedItems.push(item);
+            } else if (pair.restored && pair.restored.source_interface && pair.restored.target_interface) {
+                detail.textContent = pair.restored.source_interface + ' ↔ ' + pair.restored.target_interface + '（历史验证记录，当前未重新验证）';
+                manualItems.push(item);
             } else if (pair.candidate && pair.candidate.source_interface && pair.candidate.target_interface) {
                 detail.textContent = pair.candidate.source_interface + ' ↔ ' + pair.candidate.target_interface + '（双向 LLDP 候选；其他设备身份未确认）' + (pair.line_type ? ' · ' + pair.line_type : '');
                 candidateItems.push(item);
@@ -1299,6 +1417,11 @@ document.addEventListener("DOMContentLoaded", function() {
     initTheme();
     initChatResize();
     document.getElementById('chatForm').addEventListener('submit', submitChat);
+    document.getElementById('chatInput').addEventListener('keydown', function(event) {
+        if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey || event.isComposing || event.keyCode === 229) return;
+        event.preventDefault();
+        if (!event.repeat && !chatBusy && !chatPending) document.getElementById('chatForm').requestSubmit();
+    });
     document.getElementById('chatSettings').addEventListener('submit', saveChatSettings);
     document.getElementById('aiTemplate').addEventListener('change', applyChatTemplate);
     renderHistory();

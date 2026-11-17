@@ -503,6 +503,9 @@ body.resizing-chat { cursor: col-resize; user-select: none; }
 .chat-settings-footer { display: flex; align-items: center; gap: 8px; }
 .chat-settings-footer span, .chat-settings small { color: var(--text-secondary); font-size: 11px; }
 .chat-note { color: var(--text-secondary); font-size: 12px; }
+.chat-save-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.chat-save-controls button { color: var(--text-primary); background: var(--bg-elevated); border: 1px solid var(--border-active); border-radius: 4px; padding: 4px 7px; cursor: pointer; }
+.chat-save-controls span { color: var(--text-secondary); font-size: 11px; overflow-wrap: anywhere; }
 .chat-auto { color: var(--accent-amber); font-size: 11px; display: flex; align-items: center; gap: 6px; }
 .chat-messages { flex: 1; min-height: 0; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 12px; background: var(--bg-input); }
 .chat-message { margin-bottom: 10px; padding: 10px 12px; border-radius: 6px; background: var(--bg-elevated); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }

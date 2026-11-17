@@ -15,6 +15,7 @@ from topo_service import parse_topology_from_content, generate_ai_markdown, gene
 from topo_service import get_topo_data, get_topo_filename, set_topo_data, clear_topo_data
 from topo_service import get_cached_report, set_cached_report
 from traffic_service import traffic_monitor, list_interfaces
+from topology_archive import export_archive, import_archive
 from urllib.parse import urlsplit
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -27,6 +28,7 @@ verified_topology_links = {}
 candidate_topology_links = {}
 manual_topology = None
 manual_topology_links = {}
+restored_topology_links = {}
 topology_revision = 0
 
 
@@ -48,6 +50,22 @@ def api_chat_config():
     try:
         data = get_config() if request.method == 'GET' else set_config(request.get_json(silent=True))
         response = jsonify(data)
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+
+@app.route('/api/chat/test', methods=['POST'])
+def api_chat_test():
+    if not is_local_chat_request():
+        return jsonify({'error': 'AI 连接测试仅允许本机页面访问'}), 403
+    from chat_service import model_request
+    try:
+        reply = model_request([{'role': 'user', 'content': '请回复：连接成功。'}], [])
+        if not isinstance(reply, dict) or not isinstance(reply.get('content'), str) or not reply['content'].strip():
+            raise ValueError('AI 服务未返回有效的文本回复')
+        response = jsonify({'success': True, 'message': 'AI 服务连接和认证成功'})
         response.headers['Cache-Control'] = 'no-store'
         return response
     except ValueError as exc:
@@ -221,7 +239,7 @@ def api_sessions():
 
 @app.route("/api/topo/upload", methods=["POST"])
 def api_topo_upload():
-    global verified_topology, verified_topology_links, candidate_topology_links, manual_topology, manual_topology_links, topology_revision
+    global verified_topology, verified_topology_links, candidate_topology_links, manual_topology, manual_topology_links, restored_topology_links, topology_revision
     if "file" not in request.files:
         return jsonify({"error": "请选择文件上传"}), 400
 
@@ -251,6 +269,7 @@ def api_topo_upload():
     set_topo_data(data, file.filename)
     verified_topology, verified_topology_links, candidate_topology_links = None, {}, {}
     manual_topology, manual_topology_links = data, {}
+    restored_topology_links = {}
     topology_revision += 1
 
     return jsonify({
@@ -325,13 +344,14 @@ def api_topo_status():
 
 @app.route("/api/topo", methods=["DELETE"])
 def api_topo_delete():
-    global verified_topology, verified_topology_links, candidate_topology_links, manual_topology, manual_topology_links, topology_revision
+    global verified_topology, verified_topology_links, candidate_topology_links, manual_topology, manual_topology_links, restored_topology_links, topology_revision
     traffic_monitor.stop()
     traffic_monitor.clear_packets()
     try:
         clear_topo_data()
         verified_topology, verified_topology_links, candidate_topology_links = None, {}, {}
         manual_topology, manual_topology_links = None, {}
+        restored_topology_links = {}
         topology_revision += 1
     except OSError:
         app.logger.exception("Failed to clear topology data")
@@ -350,6 +370,7 @@ def api_topo_graph():
     resolved = verified_topology_links if verified_topology is data else {}
     candidates = candidate_topology_links if verified_topology is data else {}
     manual = manual_topology_links if manual_topology is data else {}
+    restored = restored_topology_links if manual_topology is data else {}
     connections = [{"source_id": c["source_id"], "target_id": c["target_id"],
                     "link_count": c["link_count"],
                     "interface_pairs": [{"src_port_index": p.get("src_port_index"),
@@ -357,11 +378,46 @@ def api_topo_graph():
                                          "line_type": p.get("line_type", ""),
                                          "verified": resolved.get(f'{i}:{j}'),
                                          "candidate": candidates.get(f'{i}:{j}'),
+                                         "restored": restored.get(f'{i}:{j}'),
                                          "manual": manual.get(f'{i}:{j}')}
                                         for j, p in enumerate(c.get("interface_pairs", []))]}
                    for i, c in enumerate(data["connections"])]
     return jsonify({"loaded": True, "revision": topology_revision, "filename": get_topo_filename(), "summary": data["summary"],
                     "devices": devices, "connections": connections})
+
+
+@app.route('/api/topo/interfaces-archive', methods=['GET', 'POST'])
+def api_topo_interfaces_archive():
+    global manual_topology, manual_topology_links, restored_topology_links
+    if not is_local_chat_request():
+        return jsonify({'error': '互联信息导入导出仅允许本机页面访问'}), 403
+    topology = get_topo_data()
+    if not topology:
+        return jsonify({'error': '请先上传拓扑文件'}), 400
+    if not topology_resolve_lock.acquire(blocking=False):
+        return jsonify({'error': '设备连接或接口验证正在进行，请稍后再试'}), 409
+    try:
+        if request.method == 'GET':
+            manual = manual_topology_links if manual_topology is topology else {}
+            restored = restored_topology_links if manual_topology is topology else {}
+            verified = verified_topology_links if verified_topology is topology else {}
+            response = jsonify(export_archive(topology, verified, manual, restored))
+            response.headers['Cache-Control'] = 'no-store'
+            return response
+        if request.content_length is not None and request.content_length > 2 * 1024 * 1024:
+            return jsonify({'error': '互联信息文件不能超过 2 MB'}), 413
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or type(payload.get('revision')) is not int or payload['revision'] != topology_revision:
+            return jsonify({'error': '拓扑已变更，请刷新后重试'}), 409
+        manual, restored = import_archive(topology, payload.get('archive'))
+        if get_topo_data() is not topology:
+            return jsonify({'error': '导入期间拓扑已变更'}), 409
+        manual_topology, manual_topology_links, restored_topology_links = topology, manual, restored
+        return jsonify({'success': True, 'manual_count': len(manual), 'restored_count': len(restored)})
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    finally:
+        topology_resolve_lock.release()
 
 
 @app.route('/api/topo/manual-interfaces', methods=['POST', 'DELETE'])

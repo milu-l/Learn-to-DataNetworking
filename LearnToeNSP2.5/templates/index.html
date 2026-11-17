@@ -108,6 +108,10 @@
                         </div>
                         <div class="topo-actions" id="topoActions" style="display:none">
                             <button type="button" class="btn btn-topo-analyze" id="topoVerifyButton" onclick="verifyTopologyInterfaces()">验证链路接口</button>
+                            <button type="button" class="btn btn-topo-analyze" onclick="exportTopologyInterfaces()">导出互联信息</button>
+                            <button type="button" class="btn btn-topo-analyze" onclick="document.getElementById('interfaceArchiveInput').click()">导入互联信息</button>
+                            <input type="file" id="interfaceArchiveInput" accept=".json,application/json" hidden onchange="importTopologyInterfaces(event)">
+                            <div id="interfaceArchiveStatus" class="topo-connect-status" aria-live="polite"></div>
                             <div class="topo-hint">跳过 PC、AP 和 Server；改名后检查全局 LLDP 并查询邻居，不配置接口级 LLDP。修改运行配置，不自动保存。</div>
                             <progress id="topoVerifyProgress" value="0" max="100" hidden aria-label="接口验证进度"></progress>
                             <div id="topoVerifyStatus" class="topo-connect-status" aria-live="polite"></div>
@@ -166,7 +170,7 @@
                         </div>
                         <aside class="connections-panel" aria-label="拓扑互联信息">
                             <div class="connections-heading">互联信息 <span id="connectionCount"></span></div>
-                            <div class="connections-note">链路两端的双向 LLDP 和接口匹配后即显示接口；未确认的链路显示待验证，状态变化后请重新验证。</div>
+                            <div class="connections-note">导入的历史接口可能已变化；状态变化后请重新验证。未确认的链路显示待验证。</div>
                             <div id="connectionList" class="connections-list"><div class="connections-empty">上传拓扑后显示连线</div></div>
                         </aside>
                     </div>
@@ -182,6 +186,8 @@
             <aside id="chatView" class="chat-view" aria-label="AI 对话">
                 <div class="chat-heading"><h2>AI 对话</h2><button type="button" class="chat-settings-toggle" onclick="toggleChatSettings()" aria-controls="chatSettings" id="chatSettingsToggle" aria-expanded="false">AI 设置</button></div>
                 <div class="chat-note">AI 可自动检测已上传拓扑中的本机设备。对话和工具结果会发送给所配置的 AI 服务。</div>
+                <div class="chat-save-controls"><button type="button" onclick="saveChatConversation()">保存对话</button><button type="button" onclick="restoreChatConversation()">恢复对话</button><button type="button" onclick="exportChatConversation()">导出对话</button><button type="button" onclick="deleteSavedChatConversation()">删除保存</button><span id="chatSaveStatus" aria-live="polite"></span></div>
+                <div class="chat-note">手动保存到当前浏览器，包含对话和 MCP 输出；请勿保存敏感信息。</div>
                 <label class="chat-auto"><input id="chatAutoExecute" type="checkbox" checked> 默认自动执行 MCP 操作（含设备配置命令）</label>
                 <form id="chatSettings" class="chat-settings" hidden>
                     <label>模型模板<select id="aiTemplate"><option value="custom">自定义</option><option value="deepseek-flash">DeepSeek Flash</option><option value="deepseek-v4-pro">DeepSeek V4 Pro</option></select></label>
@@ -190,12 +196,12 @@
                     <label>网络连接<select id="aiProxyMode"><option value="system">使用系统代理</option><option value="direct">直连（不使用代理）</option></select></label>
                     <label>API 密钥<input id="aiApiKey" type="password" maxlength="4096" placeholder="留空保持现有密钥" autocomplete="new-password"></label>
                     <label class="chat-clear-key"><input id="aiClearKey" type="checkbox"> 清除已保存的密钥</label>
-                    <div class="chat-settings-footer"><button type="submit" id="aiSave">保存设置</button><span id="aiSettingsStatus" aria-live="polite"></span></div>
+                    <div class="chat-settings-footer"><button type="submit" id="aiSave">保存设置</button><button type="button" id="aiTest" onclick="testChatConnection()">测试已保存设置</button><span id="aiSettingsStatus" aria-live="polite"></span></div>
                     <small>DeepSeek 模板使用非思考模式并需填写 DeepSeek API 密钥。设置仅在当前服务进程内保存，重启后恢复环境变量设置。远程地址需使用 HTTPS。</small>
                 </form>
                 <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
                 <div id="chatApproval" class="chat-approval" hidden><pre id="chatApprovalText"></pre><button type="button" onclick="confirmChatTool(true)">执行</button> <button type="button" onclick="confirmChatTool(false)">取消</button></div>
-                <form id="chatForm" class="chat-form"><textarea id="chatInput" rows="3" maxlength="8000" placeholder="例如：查看当前连接的设备，检查 AR1 的接口状态"></textarea><button type="submit" id="chatSend">发送</button></form>
+                <form id="chatForm" class="chat-form"><textarea id="chatInput" rows="3" maxlength="8000" placeholder="输入消息；Enter 发送，Shift+Enter 换行"></textarea><button type="submit" id="chatSend">发送</button></form>
             </aside>
         </main>
     </div>

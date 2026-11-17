@@ -9,9 +9,23 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import chat_service
+import app
 
 
 class DeepSeekTemplateTests(unittest.TestCase):
+    def test_missing_deepseek_key_is_reported_before_network_request(self):
+        old = dict(chat_service.config)
+        try:
+            chat_service.set_config({'base_url': 'https://api.deepseek.com', 'model': 'deepseek-flash', 'clear_api_key': True})
+            with patch.object(chat_service, 'build_opener') as opener:
+                with self.assertRaisesRegex(ValueError, '尚未设置 DeepSeek API 密钥'):
+                    chat_service.model_request([{'role': 'user', 'content': 'hello'}], [])
+            opener.assert_not_called()
+        finally:
+            with chat_service.config_lock:
+                chat_service.config.clear()
+                chat_service.config.update(old)
+
     def test_direct_mode_explicitly_disables_proxy(self):
         old = dict(chat_service.config)
         class FakeOpener:
@@ -37,7 +51,7 @@ class DeepSeekTemplateTests(unittest.TestCase):
         try:
             chat_service.set_config({'base_url': 'https://api.deepseek.com', 'model': 'deepseek-flash', 'api_key': 'test'})
             with patch.object(chat_service, 'build_opener', return_value=opener) as build, patch.object(chat_service.time, 'sleep') as wait:
-                with self.assertRaisesRegex(ValueError, 'HTTP 401'):
+                with self.assertRaisesRegex(ValueError, '密钥认证失败（HTTP 401）'):
                     chat_service.model_request([{'role': 'user', 'content': 'hello'}], [])
             build.assert_called_once()
             wait.assert_not_called()
@@ -45,6 +59,17 @@ class DeepSeekTemplateTests(unittest.TestCase):
             with chat_service.config_lock:
                 chat_service.config.clear()
                 chat_service.config.update(old)
+
+    def test_connection_test_endpoint_does_not_invoke_mcp(self):
+        client = app.app.test_client()
+        with patch.object(chat_service, 'model_request', return_value={'content': '连接成功'}) as model, \
+                patch.object(chat_service, 'Client') as mcp:
+            response = client.post('/api/chat/test')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json['success'])
+        self.assertEqual(model.call_args.args[1], [])
+        mcp.assert_not_called()
+        self.assertEqual(client.post('/api/chat/test', environ_base={'REMOTE_ADDR': '192.0.2.1'}).status_code, 403)
 
     def test_retry_once_after_connection_reset(self):
         old = dict(chat_service.config)

@@ -8,12 +8,69 @@ from session_manager import session_manager
 from lldp_service import enable_lldp as backend_enable_lldp
 from lldp_service import configure_topology_device as backend_configure_topology_device
 from lldp_service import rename_topology_device as backend_rename_topology_device
+from topology_resolver import interface_key
 from topo_service import get_topo_data, generate_ai_markdown, generate_readable_summary, generate_mermaid_topology, infer_network_hierarchy, generate_ai_prompt_context
 from urllib.request import urlopen
 from urllib.error import URLError
 import json
 import socket
+
+
+def interconnection_snapshot(topology, sessions, device_name=''):
+    """Build AI-readable data from the current graph, retaining interface provenance."""
+    devices = {device['id']: device for device in topology.get('devices', [])}
+    target = device_name.strip().casefold()
+    result = []
+    for link_index, link in enumerate(topology.get('connections', [])):
+        source, target_device = devices.get(link.get('source_id'), {}), devices.get(link.get('target_id'), {})
+        if target and target not in (str(source.get('name', '')).casefold(), str(target_device.get('name', '')).casefold()):
+            continue
+        def endpoint(device, side, pair):
+            port = str(device.get('com_port', ''))
+            session = next((s for s in sessions if s.get('ip') in ('127.0.0.1', 'localhost', '::1')
+                            and port.isdigit() and s.get('port') == int(port)), None)
+            manual = (pair.get('manual') or {}).get(side + '_interface') or None
+            verified = (pair.get('verified') or {}).get(side + '_interface') or None
+            restored = (pair.get('restored') or {}).get(side + '_interface') or None
+            candidate = (pair.get('candidate') or {}).get(side + '_interface') or None
+            return {'id': device.get('id'), 'name': device.get('name'), 'model': device.get('model'),
+                    'telnet_ip': '127.0.0.1' if port.isdigit() and 1 <= int(port) <= 65535 else None,
+                    'telnet_port': int(port) if port.isdigit() and 1 <= int(port) <= 65535 else None,
+                    'session_id': session.get('session_id') if session else None,
+                    'interface': manual or verified or restored or candidate,
+                    'interface_source': '手动填写，未经 LLDP 验证' if manual else ('双向 LLDP 已验证' if verified else ('导入的历史验证记录，当前未重新验证' if restored else ('LLDP 候选，未经验证' if candidate else '待验证'))),
+                    'manual_interface': manual, 'lldp_verified_interface': verified,
+                    'previously_verified_interface': restored,
+                    'interface_conflict': bool(manual and verified and interface_key(manual) != interface_key(verified))}
+        for pair_index, pair in enumerate(link.get('interface_pairs', [])):
+            result.append({'link_id': f'{link_index}:{pair_index}', 'line_type': pair.get('line_type', ''),
+                           'source': endpoint(source, 'source', pair), 'target': endpoint(target_device, 'target', pair)})
+    return {'loaded': True, 'filename': topology.get('filename'), 'revision': topology.get('revision'),
+            'device_filter': device_name.strip() or None, 'links': result,
+            'note': '接口来自当前拓扑的临时记录；手动填写或候选接口未经验证，配置前应检查设备实际接口和现有 IP。'}
+
+
 def register_tools(mcp):
+    @mcp.tool()
+    def get_topology_links(device_name: str = '', offset: int = 0, limit: int = 10) -> str:
+        """读取临时互联信息、接口来源和会话；按设备名精确筛选，或按 offset 分页（每页最多 10 条）。不发送设备命令。"""
+        if not isinstance(device_name, str) or len(device_name) > 200 or any(ord(c) < 32 for c in device_name):
+            return '设备名称无效。'
+        if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 10:
+            return '分页参数无效，offset 必须非负，limit 须为 1 至 10。'
+        try:
+            with urlopen('http://127.0.0.1:5000/api/topo/graph', timeout=5) as response:
+                topology = json.load(response)
+        except (URLError, OSError, ValueError):
+            return '无法读取 Web 拓扑，请确认 Web 服务正在运行。'
+        if not topology.get('loaded'):
+            return '尚未上传拓扑，请先在网页中上传拓扑文件。'
+        snapshot = interconnection_snapshot(topology, session_manager.list_sessions(), device_name)
+        links = snapshot['links']
+        snapshot.update(total=len(links), offset=offset, next_offset=offset + limit if offset + limit < len(links) else None,
+                        links=links[offset:offset + limit])
+        return json.dumps(snapshot, ensure_ascii=False)
+
     @mcp.tool()
     def rename_topology_device(ip: str, port: int, name: str) -> str:
         """将设备名修改为拓扑名称，不保存配置。"""
