@@ -294,49 +294,16 @@ function submitChat(event) {
     chatRequest('/api/chat', {messages: chatHistory, auto_execute: document.getElementById('chatAutoExecute').checked});
 }
 
-function loadHistory() {
-    try {
-        return JSON.parse(localStorage.getItem("scan_history") || "[]");
-    } catch (e) {
-        return [];
-    }
-}
-
-function saveHistory(entry) {
-    let history = loadHistory();
-    history.unshift(entry);
-    if (history.length > 20) history = history.slice(0, 20);
-    localStorage.setItem("scan_history", JSON.stringify(history));
-}
-
-function renderHistory() {
-    const history = loadHistory();
-    const container = document.getElementById("historyList");
-    if (history.length === 0) {
-        container.innerHTML = '<div class="empty-state">暂无历史记录</div>';
-        return;
-    }
-    container.innerHTML = history.map(h => {
-        const date = new Date(h.timestamp);
-        const time = date.toLocaleString("zh-CN");
-        return '<div class="history-item" onclick="restoreHistory(\'' + h.ip + "'," + h.startPort + "," + h.endPort + ')">' +
-            '<div class="history-ip">' + h.ip + " : " + h.startPort + "-" + h.endPort + '</div>' +
-            '<div class="history-meta">' + time + " | 发现 " + h.openPorts.length + " 个端口</div></div>";
-    }).join("");
-}
-
-function clearScanHistory() {
-    if (!loadHistory().length || !confirm('确定清空本浏览器的扫描历史吗？')) return;
-    try {
-        localStorage.removeItem('scan_history');
-        renderHistory();
-    } catch (error) { alert('无法清空扫描历史：' + error.message); }
-}
-
-function restoreHistory(ip, startPort, endPort) {
-    document.getElementById("scanIp").value = ip;
-    document.getElementById("scanStart").value = startPort;
-    document.getElementById("scanEnd").value = endPort;
+function switchSidebarTab(name, focusTab) {
+    if (!['scan', 'device', 'topo'].includes(name)) return;
+    ['scan', 'device', 'topo'].forEach(function(key) {
+        var active = key === name, tab = document.getElementById(key + 'Tab');
+        tab.classList.toggle('active', active);
+        tab.setAttribute('aria-selected', String(active));
+        tab.tabIndex = active ? 0 : -1;
+        document.getElementById(key + 'Panel').hidden = !active;
+    });
+    if (focusTab) document.getElementById(name + 'Tab').focus();
 }
 
 function startScan() {
@@ -413,12 +380,6 @@ function listenScanProgress(scanId) {
         document.getElementById("btnScan").classList.remove("scanning");
         document.getElementById("btnScan").innerHTML = '<span class="btn-icon">&#9654;</span> 开始扫描';
         es.close();
-
-        var ip = document.getElementById("scanIp").value.trim();
-        var startPort = parseInt(document.getElementById("scanStart").value);
-        var endPort = parseInt(document.getElementById("scanEnd").value);
-        saveHistory({ ip: ip, startPort: startPort, endPort: endPort, openPorts: d.open_ports, timestamp: Date.now(), id: Date.now().toString() });
-        renderHistory();
 
         appendToSession(null, "[完成] 扫描结束，共发现 " + d.open_ports.length + " 个开放端口: " + (d.open_ports.join(", ") || "无"), "info");
         renderDeviceList();
@@ -501,6 +462,12 @@ function connectToDevice(port) {
     .catch(function(e) { appendToSession(null, "[错误] " + e.message, "error"); });
 }
 
+function sessionLabel(ip, port) {
+    var local = ['127.0.0.1', 'localhost', '::1'].includes(String(ip).toLowerCase());
+    var name = local ? state.topologyNames[Number(port)] : null;
+    return name ? name + '（' + port + '）' : ip + ':' + port;
+}
+
 function createSessionTab(sessionId, ip, port, initialOutput) {
     var panel = document.createElement("div");
     panel.className = "terminal-panel";
@@ -516,7 +483,7 @@ function createSessionTab(sessionId, ip, port, initialOutput) {
 
     var prompt = document.createElement("span");
     prompt.className = "prompt";
-    prompt.textContent = ip + ":" + port + " >";
+    prompt.textContent = sessionLabel(ip, port) + ' >';
     inputBar.appendChild(prompt);
 
     var input = document.createElement("input");
@@ -539,13 +506,14 @@ function createSessionTab(sessionId, ip, port, initialOutput) {
         port: port,
         outputEl: output,
         inputEl: input,
+        promptEl: prompt,
         panelEl: panel
     };
 
     if (initialOutput) {
         appendToSession(sessionId, initialOutput.trim(), "output");
     }
-    appendToSession(sessionId, "[连接] 已连接到 " + ip + ":" + port + " (会话: " + sessionId + ")", "info");
+    appendToSession(sessionId, "[连接] 已连接到 " + sessionLabel(ip, port) + " (会话: " + sessionId + ")", "info");
 
     startPolling(sessionId);
     renderTabs();
@@ -621,19 +589,21 @@ function showWelcome() {
 
 function renderTabs() {
     var tabs = document.getElementById("terminalTabs");
-    var html = "";
-    var ids = Object.keys(state.sessions);
-    for (var i = 0; i < ids.length; i++) {
-        var sid = ids[i];
+    tabs.replaceChildren();
+    Object.keys(state.sessions).forEach(function(sid) {
         var s = state.sessions[sid];
-        var isActive = sid === state.activeSessionId;
-        html += '<div class="terminal-tab' + (isActive ? " active" : "") + '" onclick="switchToSession(\'' + sid + '\')">' +
-            '<span class="tab-indicator"></span>' +
-            s.ip + ":" + s.port +
-            '<span class="tab-close" onclick="event.stopPropagation(); closeTab(\'' + sid + '\',' + s.port + ')">&times;</span>' +
-            '</div>';
-    }
-    tabs.innerHTML = html;
+        var label = sessionLabel(s.ip, s.port);
+        var tab = document.createElement('div');
+        tab.className = 'terminal-tab' + (sid === state.activeSessionId ? ' active' : '');
+        tab.title = s.ip + ':' + s.port;
+        tab.onclick = function() { switchToSession(sid); };
+        var indicator = document.createElement('span'); indicator.className = 'tab-indicator';
+        var name = document.createElement('span'); name.textContent = label;
+        var close = document.createElement('span'); close.className = 'tab-close'; close.textContent = '×';
+        close.onclick = function(event) { event.stopPropagation(); closeTab(sid, s.port); };
+        tab.append(indicator, name, close); tabs.appendChild(tab);
+        if (s.promptEl) s.promptEl.textContent = label + ' >';
+    });
 }
 
 function closeTab(sessionId, port) {
@@ -788,10 +758,17 @@ function loadTopologyGraph(throwOnError) {
         if (!data.loaded) { resetTopologyDisplay(); if (throwOnError) throw new Error('拓扑已删除，请重新上传'); return; }
         currentTopologyRevision = data.revision;
         state.topologyNames = {};
+        var duplicatePorts = new Set();
         (data.devices || []).forEach(function(device) {
-            if (/^\d+$/.test(String(device.com_port)) && device.name) state.topologyNames[Number(device.com_port)] = device.name;
+            if (!/^\d+$/.test(String(device.com_port)) || !device.name) return;
+            var port = Number(device.com_port);
+            if (port < 1 || port > 65535 || duplicatePorts.has(port)) return;
+            if (Object.prototype.hasOwnProperty.call(state.topologyNames, port)) {
+                delete state.topologyNames[port]; duplicatePorts.add(port);
+            } else state.topologyNames[port] = device.name;
         });
         renderDeviceList();
+        renderTabs();
         document.getElementById("topoFilename").textContent = data.filename;
         document.getElementById("topoStats").textContent = "设备: " + data.summary.total_devices + " | 链路: " + data.summary.total_connections + " | VLAN: " + data.summary.vlan_count + " | 子网: " + data.summary.subnet_count;
         document.getElementById("topoStatus").textContent = "已加载";
@@ -815,6 +792,7 @@ function resetTopologyDisplay() {
     renderPackets();
     state.topologyNames = {};
     renderDeviceList();
+    renderTabs();
     document.getElementById('topoFilename').textContent = '';
     document.getElementById('topoStats').textContent = '';
     document.getElementById('topoConnectStatus').textContent = '';
@@ -827,19 +805,50 @@ function resetTopologyDisplay() {
     document.getElementById('topoStatus').classList.remove('loaded');
     document.getElementById('topoInfo').style.display = 'none';
     document.getElementById('topoActions').style.display = 'none';
-    document.getElementById('topoOutput').style.display = 'none';
-    document.getElementById('topoOutputContent').textContent = '';
     document.getElementById('topoFileInput').value = '';
     document.getElementById('clearTopologyButton').hidden = true;
     renderTopologyGraph({loaded: false});
 }
 
+var TOPOLOGY_ARCHIVE_PREFIX = 'learn_to_ensp_interfaces_v1:';
+
+async function readTopologyArchive() {
+    var response = await fetch('/api/topo/interfaces-archive', {cache: 'no-store'});
+    var data = await response.json();
+    if (!response.ok) throw new Error(data.error || '读取互联信息失败');
+    return data;
+}
+
+async function saveTopologyInterfaces() {
+    var status = document.getElementById('interfaceArchiveStatus');
+    try {
+        var archive = await readTopologyArchive();
+        if (!archive.links.length) throw new Error('没有可保存的链路接口信息，请先验证或手动填写');
+        localStorage.setItem(TOPOLOGY_ARCHIVE_PREFIX + archive.fingerprint, JSON.stringify(archive));
+        status.textContent = '已保存 ' + archive.links.length + ' 条链路到当前浏览器；下次上传相同拓扑后可恢复。';
+    } catch (error) { status.textContent = error.name === 'QuotaExceededError' ? '保存失败：浏览器存储空间不足' : error.message; }
+}
+
+async function restoreTopologyInterfaces() {
+    var status = document.getElementById('interfaceArchiveStatus');
+    try {
+        var revision = currentTopologyRevision;
+        var current = await readTopologyArchive();
+        var saved = localStorage.getItem(TOPOLOGY_ARCHIVE_PREFIX + current.fingerprint);
+        if (!saved) throw new Error('当前拓扑没有已保存的链路信息');
+        var archive = JSON.parse(saved);
+        var response = await fetch('/api/topo/interfaces-archive', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({revision: revision, archive: archive})});
+        var data = await response.json();
+        if (!response.ok) throw new Error(data.error || '恢复失败');
+        await loadTopologyGraph(true);
+        status.textContent = '已恢复 ' + data.restored_count + ' 条历史验证记录和 ' + data.manual_count + ' 条手动记录；历史记录未重新验证。';
+    } catch (error) { status.textContent = error instanceof SyntaxError ? '保存的链路数据无效' : error.message; }
+}
+
 async function exportTopologyInterfaces() {
     var status = document.getElementById('interfaceArchiveStatus');
     try {
-        var response = await fetch('/api/topo/interfaces-archive', {cache: 'no-store'});
-        var data = await response.json();
-        if (!response.ok) throw new Error(data.error || '导出失败');
+        var data = await readTopologyArchive();
         var url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'}));
         var link = document.createElement('a'); link.href = url; link.download = 'ensp-互联信息.json';
         document.body.appendChild(link); link.click(); link.remove();
@@ -1364,34 +1373,6 @@ async function clearPackets() {
     } catch (error) { alert('清空数据包失败：' + error.message); }
 }
 
-function analyzeTopo(type) {
-    var typeLabel = {
-        "markdown": "完整报告",
-        "summary": "文本摘要",
-        "mermaid": "Mermaid拓扑图"
-    };
-
-    var outputArea = document.getElementById("topoOutput");
-    var outputContent = document.getElementById("topoOutputContent");
-    outputContent.textContent = "正在生成" + (typeLabel[type] || type) + "...";
-    outputArea.style.display = "block";
-    outputContent.scrollTop = 0;
-
-    fetch("/api/topo/analyze?type=" + type)
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-        if (data.error) {
-            outputContent.textContent = "错误: " + data.error;
-            return;
-        }
-        outputContent.textContent = data.content;
-        outputContent.scrollTop = 0;
-    })
-    .catch(function(e) {
-        outputContent.textContent = "请求失败: " + e.message;
-    });
-}
-
 async function checkMcpStatus() {
     var dot = document.getElementById("mcpStatusDot");
     var label = document.getElementById("mcpStatusText");
@@ -1424,7 +1405,13 @@ document.addEventListener("DOMContentLoaded", function() {
     });
     document.getElementById('chatSettings').addEventListener('submit', saveChatSettings);
     document.getElementById('aiTemplate').addEventListener('change', applyChatTemplate);
-    renderHistory();
+    document.querySelector('.sidebar-tabs').addEventListener('keydown', function(event) {
+        var tabs = ['scan', 'device', 'topo'];
+        var current = tabs.findIndex(function(name) { return document.activeElement.id === name + 'Tab'; });
+        if (current < 0) return;
+        var next = event.key === 'ArrowRight' ? (current + 1) % tabs.length : event.key === 'ArrowLeft' ? (current + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1;
+        if (next >= 0) { event.preventDefault(); switchSidebarTab(tabs[next], true); }
+    });
     checkMcpStatus();
     loadTopologyGraph();
     loadTrafficInterfaces();
