@@ -2,7 +2,7 @@
 
 Learn to DataNetworking 是一款面向 eNSP、EVE-NG 和 PNETLab 网络模拟环境的管理工具，通过网页和 MCP 接口提供设备连接、命令执行、拓扑分析、流量监控及 AI 辅助操作。
 
-当前版本 **2.6**。应用目录名保留 `LearnToeNSP2.5`，以兼容已有启动路径。版本变更见 [更新记录](../CHANGELOG.md)。
+当前版本 **2.6**。应用目录保留原路径，以兼容已有启动配置。版本变更见 [更新记录](../CHANGELOG.md)。
 
 ## 功能概览
 
@@ -211,7 +211,7 @@ AI 可通过只读 MCP 工具 `get_topology_links` 查询当前互联信息，�
     "learn-to-datanetworking": {
       "command": "python",
       "args": ["mcp_server.py"],
-      "cwd": "E:\\Documents\\GitHub\\Learn-to-ensp-mcp\\LearnToeNSP2.5"
+      "cwd": "E:\\Documents\\GitHub\\Learn-to-DataNetworking\\LearnToeNSP2.5"
     }
   }
 }

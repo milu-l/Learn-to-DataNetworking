@@ -6,7 +6,9 @@ Learn to DataNetworking 是面向 eNSP、EVE-NG 和 PNETLab 网络模拟环境�
 
 本项目基于 [llz-2002/ensptomcpfortrae](https://github.com/llz-2002/ensptomcpfortrae/tree/main) 的原有内容修改、扩展而来。感谢原项目作者的工作。
 
-当前版本为 **2.6**，项目代码位于 [应用代码](LearnToeNSP2.5/) 目录。为兼容已有启动配置，应用目录名保留 `LearnToeNSP2.5`。近期改动见 [更新记录](CHANGELOG.md)。
+当前版本为 **2.6**，项目代码位于 [应用代码](LearnToeNSP2.5/) 目录。应用目录保留原路径，以兼容已有启动配置。近期改动见 [更新记录](CHANGELOG.md)。
+
+项目仓库：[milu-l/Learn-to-DataNetworking](https://github.com/milu-l/Learn-to-DataNetworking)。
 
 ## 2.6 功能
 
