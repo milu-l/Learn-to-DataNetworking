@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Learn to eNSP</title>
+    <title>Learn to DataNetworking</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -11,7 +11,7 @@
         <header class="header">
             <div class="header-left">
                 <span class="logo-icon">&#9608;</span>
-                <h1>Learn to eNSP</h1>
+                <h1>Learn to DataNetworking</h1>
             </div>
             <div class="header-right">
                 <button type="button" id="themeToggle" class="theme-toggle" aria-label="切换主题">浅色主题</button>
@@ -71,6 +71,7 @@
                     <div class="panel-body">
                         <button type="button" class="btn btn-topo-analyze" id="topoConnectButton" onclick="connectTopologyDevices()">一键连接拓扑设备</button>
                         <div class="topo-hint">先上传拓扑；连接后可在拓扑分析中验证接口。</div>
+                        <select id="deviceSource" aria-label="设备来源" onchange="state.deviceSource=this.value; renderDeviceList()"><option value="topology">当前拓扑设备</option><option value="scan">端口扫描结果</option></select>
                         <details class="topo-log" id="topoConnectLog" hidden>
                             <summary>连接日志</summary>
                             <div id="topoConnectStatus" class="topo-connect-status" aria-live="polite"></div>
@@ -89,12 +90,36 @@
                         <button type="button" class="panel-clear" id="clearTopologyButton" onclick="clearTopology()" hidden>删除</button>
                     </div>
                     <div class="panel-body">
+                        <details class="topo-log" id="eveSettings">
+                            <summary>EVE-NG / PNETLab 服务器</summary>
+                            <div class="form-group"><label for="eveBase">服务器地址</label><input id="eveBase" type="url" value="http://192.168.52.128" placeholder="http://EVE服务器"></div>
+                            <div class="form-group"><label for="eveKind">类型</label><select id="eveKind" onchange="updateEveKind()"><option value="pnet">PNETLab（已打开实验的会话）</option><option value="eve">EVE-NG</option></select></div>
+                            <div class="form-group" id="eveLabGroup" hidden><label for="eveLab">EVE 实验路径</label><input id="eveLab" placeholder="/目录/实验.unl"></div>
+                            <div class="form-group" id="eveUserGroup" hidden><label for="eveUser">EVE 用户名</label><input id="eveUser" autocomplete="off"></div>
+                            <div class="form-group" id="evePasswordGroup" hidden><label for="evePassword">EVE 密码</label><input id="evePassword" type="password" autocomplete="new-password"></div>
+                            <div class="form-group" id="eveCookieGroup"><label for="eveCookie">PNETLab 浏览器 Cookie</label><input id="eveCookie" type="password" autocomplete="new-password" placeholder="在 PNETLab 登录并打开相同实验后填写"></div>
+                            <button type="button" class="btn btn-topo-analyze" onclick="saveEveSettings()">接入服务器</button>
+                            <button type="button" class="btn btn-topo-analyze" onclick="loadTopologyGraph()">刷新设备地址</button>
+                            <div class="topo-hint">认证信息仅存当前服务内存。PNETLab 若要求验证码，请在原网站登录，再从浏览器开发者工具中复制请求的 Cookie。请勿发到 AI 对话。</div>
+                            <div id="eveStatus" class="topo-connect-status" aria-live="polite"></div>
+                            <details class="topo-log">
+                                <summary>远程流量抓包（SSH）</summary>
+                                <div class="form-group"><label for="eveSshHost">SSH 地址</label><input id="eveSshHost" placeholder="与服务器地址相同可留空"></div>
+                                <div class="form-group"><label for="eveSshPort">SSH 端口</label><input id="eveSshPort" type="number" value="22" min="1" max="65535"></div>
+                                <div class="form-group"><label for="eveSshUser">SSH 用户名</label><input id="eveSshUser" autocomplete="off"></div>
+                                <div class="form-group"><label for="eveSshPassword">SSH 密码（留空使用本机密钥）</label><input id="eveSshPassword" type="password" autocomplete="new-password"></div>
+                                <div class="form-group"><label for="eveSshFingerprint">主机 SHA256 指纹（或使用 known_hosts）</label><input id="eveSshFingerprint" placeholder="SHA256:..."></div>
+                                <button type="button" class="btn btn-topo-analyze" onclick="saveEveCaptureSettings()">连接 SSH 并读取网卡</button>
+                                <div class="topo-hint">服务器需安装 tcpdump，SSH 用户需有抓包权限。新主机请在服务器通过 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub 核对指纹。密码仅存本次服务内存。</div>
+                                <div id="eveCaptureStatus" class="topo-connect-status" aria-live="polite"></div>
+                            </details>
+                        </details>
                         <div class="topo-upload-area" id="topoUploadArea">
                             <label class="topo-upload-btn" for="topoFileInput">
                                 <span class="btn-icon">&#8682;</span> 上传拓扑文件
                             </label>
-                            <input type="file" id="topoFileInput" accept=".txt,.topo,.xml,.vbox" onchange="handleTopoUpload(event)" style="display:none">
-                            <div class="topo-hint">支持 eNSP 导出的 .txt / .topo 文件</div>
+                            <input type="file" id="topoFileInput" accept=".txt,.topo,.xml,.vbox,.unl" onchange="handleTopoUpload(event)" style="display:none">
+                            <div class="topo-hint">支持 eNSP .topo / .txt 和 EVE-NG .unl 文件</div>
                         </div>
                         <div class="topo-info" id="topoInfo" style="display:none">
                             <div class="topo-filename" id="topoFilename"></div>
@@ -134,12 +159,9 @@
                 <div class="terminal-content" id="terminalContent">
                     <div class="terminal-welcome" id="terminalWelcome">
                         <pre>
-  _____       _   _  ____  _____   _______    _           _
- | ____|   _ | \ | ||  _ \|  __ \ |__   __|  | |         | |
- |  _|| | | ||  \| || |_) | |__) |   | | ___ | | ___  ___| |_
- | |__| |_| || |\  ||  __/|  ___/    | |/ _ \| |/ _ \/ __| __|
- |_____\__,_||_| \_||_|   |_|        |_|\___/|_|\___/\___|\__|
-                        Learn to eNSP
+ Learn to DataNetworking
+ ──────────────────────────
+ eNSP · EVE-NG · PNETLab
 
  输入 IP 和端口范围，点击"开始扫描"发现设备。
  在设备列表中点击"连接"建立 Telnet 会话。
@@ -152,6 +174,12 @@
                 </div>
                 <div id="topologyView" class="workspace-view topology-view" hidden>
                     <div class="graph-heading"><span>网络拓扑 <span id="graphStats"></span></span><div class="traffic-controls"><button type="button" onclick="zoomTopology(1.25)" aria-label="放大拓扑">＋</button><button type="button" onclick="zoomTopology(0.8)" aria-label="缩小拓扑">−</button><button type="button" onclick="resetTopologyZoom()">适应画布</button><select id="trafficInterface" aria-label="抓包网卡"><option value="">选择抓包网卡</option></select><button type="button" id="trafficButton" onclick="toggleTraffic()">开始监控</button><span id="trafficStatus" aria-live="polite">未监控</span></div></div>
+                    <details id="eveCaptureMappings" class="eve-capture-mappings" hidden>
+                        <summary>远程抓包链路映射</summary>
+                        <p>先在拓扑分析的服务器设置中连接 SSH，再为需监控的链路选择服务器实际 TAP 网卡。每条链路选一端网卡，同一网卡只选一次。共享网桥抓包包含整个网段，请勿当作单条直连链路。</p>
+                        <button type="button" onclick="loadTrafficInterfaces()">刷新服务器网卡</button>
+                        <div id="eveMappingRows"></div>
+                    </details>
                     <div class="topology-workspace">
                         <div class="graph-canvas">
                             <svg id="topologyGraph" role="img" aria-label="网络拓扑图，使用滚轮缩放并拖动平移"></svg>
@@ -175,7 +203,7 @@
             <div id="chatResize" class="chat-resize" role="separator" tabindex="0" aria-label="调整 AI 对话栏宽度" aria-orientation="vertical" aria-controls="chatView" aria-valuemin="280" aria-valuemax="900" aria-valuenow="360" title="拖动调整宽度，也可使用左右方向键"></div>
             <aside id="chatView" class="chat-view" aria-label="AI 对话">
                 <div class="chat-heading"><h2>AI 对话</h2><button type="button" class="chat-settings-toggle" onclick="toggleChatSettings()" aria-controls="chatSettings" id="chatSettingsToggle" aria-expanded="false">AI 设置</button></div>
-                <div class="chat-note">AI 可自动检测已上传拓扑中的本机设备。对话和工具结果会发送给所配置的 AI 服务。</div>
+                <div class="chat-note">AI 可检测已上传拓扑的设备，支持接入 EVE/PNET 远程控制台。对话和工具结果会发送给所配置的 AI 服务。</div>
                 <div class="chat-save-controls"><button type="button" onclick="saveChatConversation()">保存对话</button><button type="button" onclick="restoreChatConversation()">恢复对话</button><button type="button" onclick="exportChatConversation()">导出对话</button><button type="button" onclick="deleteSavedChatConversation()">删除保存</button><span id="chatSaveStatus" aria-live="polite"></span></div>
                 <div class="chat-note">手动保存到当前浏览器，包含对话和 MCP 输出；请勿保存敏感信息。</div>
                 <label class="chat-auto"><input id="chatAutoExecute" type="checkbox" checked> 默认自动执行 MCP 操作（含设备配置命令）</label>
@@ -196,6 +224,7 @@
         </main>
     </div>
 
+    <script src="/static/command_completion.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

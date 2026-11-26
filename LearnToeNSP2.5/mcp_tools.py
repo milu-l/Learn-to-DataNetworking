@@ -27,20 +27,24 @@ def interconnection_snapshot(topology, sessions, device_name=''):
             continue
         def endpoint(device, side, pair):
             port = str(device.get('com_port', ''))
-            session = next((s for s in sessions if s.get('ip') in ('127.0.0.1', 'localhost', '::1')
+            host = device.get('console_host') or '127.0.0.1'
+            allowed_hosts = ('127.0.0.1', 'localhost', '::1') if host == '127.0.0.1' else (host,)
+            session = next((s for s in sessions if s.get('ip') in allowed_hosts
                             and port.isdigit() and s.get('port') == int(port)), None)
             manual = (pair.get('manual') or {}).get(side + '_interface') or None
             verified = (pair.get('verified') or {}).get(side + '_interface') or None
             restored = (pair.get('restored') or {}).get(side + '_interface') or None
             candidate = (pair.get('candidate') or {}).get(side + '_interface') or None
+            declared = (pair.get('declared') or {}).get(side + '_interface') or None
             return {'id': device.get('id'), 'name': device.get('name'), 'model': device.get('model'),
-                    'telnet_ip': '127.0.0.1' if port.isdigit() and 1 <= int(port) <= 65535 else None,
+                    'telnet_ip': host if port.isdigit() and 1 <= int(port) <= 65535 else None,
                     'telnet_port': int(port) if port.isdigit() and 1 <= int(port) <= 65535 else None,
                     'session_id': session.get('session_id') if session else None,
-                    'interface': manual or verified or restored or candidate,
-                    'interface_source': '手动填写，未经 LLDP 验证' if manual else ('双向 LLDP 已验证' if verified else ('导入的历史验证记录，当前未重新验证' if restored else ('LLDP 候选，未经验证' if candidate else '待验证'))),
+                    'interface': manual or verified or restored or candidate or declared,
+                    'interface_source': '手动填写，未经 LLDP 验证' if manual else ('双向 LLDP 已验证' if verified else ('导入的历史验证记录，当前未重新验证' if restored else ('LLDP 候选，未经验证' if candidate else ('拓扑文件声明，未经验证' if declared else '待验证')))),
                     'manual_interface': manual, 'lldp_verified_interface': verified,
                     'previously_verified_interface': restored,
+                    'declared_interface': declared,
                     'interface_conflict': bool(manual and verified and interface_key(manual) != interface_key(verified))}
         for pair_index, pair in enumerate(link.get('interface_pairs', [])):
             result.append({'link_id': f'{link_index}:{pair_index}', 'line_type': pair.get('line_type', ''),
@@ -59,7 +63,7 @@ def register_tools(mcp):
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 10:
             return '分页参数无效，offset 必须非负，limit 须为 1 至 10。'
         try:
-            with urlopen('http://127.0.0.1:5000/api/topo/graph', timeout=5) as response:
+            with urlopen('http://127.0.0.1:5000/api/topo/graph', timeout=20) as response:
                 topology = json.load(response)
         except (URLError, OSError, ValueError):
             return '无法读取 Web 拓扑，请确认 Web 服务正在运行。'
@@ -73,29 +77,31 @@ def register_tools(mcp):
 
     @mcp.tool()
     def rename_topology_device(ip: str, port: int, name: str) -> str:
-        """将设备名修改为拓扑名称，不保存配置。"""
+        """使用华为 VRP 命令将设备名修改为拓扑名称，不保存配置；不适用于其他厂商。"""
         return json.dumps(backend_rename_topology_device(ip, port, name), ensure_ascii=False)
 
     @mcp.tool()
     def configure_topology_device(ip: str, port: int, name: str) -> str:
-        """检查并启用全局 LLDP，不修改接口级 LLDP，也不保存配置。"""
+        """检查并启用华为 VRP 全局 LLDP，不修改接口级 LLDP，也不保存配置。"""
         return json.dumps(backend_configure_topology_device(ip, port, name), ensure_ascii=False)
 
     @mcp.tool()
     def enable_lldp(ip: str, port: int) -> str:
-        """检查并启用已连接设备的全局 LLDP；修改运行配置但不保存。"""
+        """检查并启用已连接华为 VRP 设备的全局 LLDP；修改运行配置但不保存。"""
         return json.dumps(backend_enable_lldp(ip, port), ensure_ascii=False)
 
     @mcp.tool()
     def detect_topology_devices() -> str:
-        """检测当前 Web 拓扑中设备的本机 Telnet 端口，并列出已有会话；不会发送设备命令。"""
+        """检测当前拓扑设备的 Telnet 地址和会话，支持已绑定的 EVE/PNET 服务器；不发送设备命令。"""
         try:
-            with urlopen('http://127.0.0.1:5000/api/topo/graph', timeout=5) as response:
+            with urlopen('http://127.0.0.1:5000/api/topo/graph', timeout=20) as response:
                 topology = json.load(response)
         except (URLError, OSError, json.JSONDecodeError):
             return '无法读取 Web 拓扑，请确认 Web 服务正在运行。'
         if not topology.get('loaded'):
             return '尚未上传拓扑，请先在网页中上传拓扑文件。'
+        if topology.get('runtime_error'):
+            return '无法检测服务器设备：' + topology['runtime_error']
         sessions = session_manager.list_sessions()
         results = []
         for device in topology.get('devices', []):
@@ -104,16 +110,18 @@ def register_tools(mcp):
                 results.append({'name': device.get('name'), 'status': '拓扑未提供有效端口'})
                 continue
             port = int(raw_port)
-            existing = next((s for s in sessions if s['ip'] in ('127.0.0.1', 'localhost', '::1') and s['port'] == port), None)
+            host = device.get('console_host') or '127.0.0.1'
+            allowed_hosts = ('127.0.0.1', 'localhost', '::1') if host == '127.0.0.1' else (host,)
+            existing = next((s for s in sessions if s['ip'] in allowed_hosts and s['port'] == port), None)
             if existing:
                 status = '已连接'
             else:
                 try:
-                    with socket.create_connection(('127.0.0.1', port), timeout=0.5):
+                    with socket.create_connection((host, port), timeout=0.5):
                         status = '端口开放'
                 except OSError:
                     status = '端口不可用'
-            results.append({'name': device.get('name'), 'ip': '127.0.0.1', 'port': port,
+            results.append({'name': device.get('name'), 'model': device.get('model'), 'ip': host, 'port': port,
                             'status': status, 'session_id': existing['session_id'] if existing else None})
         return json.dumps(results, ensure_ascii=False)
 
@@ -193,7 +201,7 @@ def register_tools(mcp):
 
     @mcp.tool()
     def get_device_info(ip: str, port: int) -> str:
-        """获取设备基本信息（执行 display version 命令）
+        """获取华为 VRP 设备基本信息（执行 display version 命令）；其他厂商请使用 send_command 执行其查询命令。
 
         参数:
         - ip: 设备 IP 地址

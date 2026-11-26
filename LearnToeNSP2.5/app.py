@@ -16,6 +16,8 @@ from topo_service import get_topo_data, get_topo_filename, set_topo_data, clear_
 from topo_service import get_cached_report, set_cached_report
 from traffic_service import traffic_monitor, list_interfaces
 from topology_archive import export_archive, import_archive
+from eve_service import eve_service
+from eve_capture import eve_ssh, eve_traffic_monitor
 from urllib.parse import urlsplit
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -247,8 +249,8 @@ def api_topo_upload():
     if file.filename == "":
         return jsonify({"error": "请选择文件"}), 400
 
-    if not file.filename.lower().endswith((".txt", ".topo", ".xml", ".vbox")):
-        return jsonify({"error": "不支持的文件格式，请上传 .txt 或 .topo 文件"}), 400
+    if not file.filename.lower().endswith((".txt", ".topo", ".xml", ".vbox", ".unl")):
+        return jsonify({"error": "不支持的文件格式，请上传 eNSP 拓扑或 EVE-NG .unl 文件"}), 400
 
     try:
         content = file.read().decode("utf-8")
@@ -266,6 +268,8 @@ def api_topo_upload():
 
     traffic_monitor.stop()
     traffic_monitor.clear_packets()
+    eve_traffic_monitor.stop()
+    eve_traffic_monitor.clear_packets()
     set_topo_data(data, file.filename)
     verified_topology, verified_topology_links, candidate_topology_links = None, {}, {}
     manual_topology, manual_topology_links = data, {}
@@ -347,6 +351,8 @@ def api_topo_delete():
     global verified_topology, verified_topology_links, candidate_topology_links, manual_topology, manual_topology_links, restored_topology_links, topology_revision
     traffic_monitor.stop()
     traffic_monitor.clear_packets()
+    eve_traffic_monitor.stop()
+    eve_traffic_monitor.clear_packets()
     try:
         clear_topo_data()
         verified_topology, verified_topology_links, candidate_topology_links = None, {}, {}
@@ -364,9 +370,16 @@ def api_topo_graph():
     data = get_topo_data()
     if not data:
         return jsonify({"loaded": False})
+    runtime, runtime_error = data, None
+    if data.get('format') == 'eve-ng':
+        try:
+            runtime = eve_service.bind(data)
+        except ValueError as exc:
+            runtime_error = str(exc)
     devices = [{"id": d["id"], "name": d["name"], "model": d["model"], "category": d.get("category", ""),
-                "com_port": d.get("com_port", ""), "position": d["position"]}
-               for d in data["device_inventory"].values()]
+                "com_port": d.get("com_port", ""), "console_host": d.get('console_host', '' if data.get('format') == 'eve-ng' else '127.0.0.1'),
+                "console_error": d.get('console_error', ''), "position": d["position"]}
+               for d in runtime["device_inventory"].values()]
     resolved = verified_topology_links if verified_topology is data else {}
     candidates = candidate_topology_links if verified_topology is data else {}
     manual = manual_topology_links if manual_topology is data else {}
@@ -376,14 +389,28 @@ def api_topo_graph():
                     "interface_pairs": [{"src_port_index": p.get("src_port_index"),
                                          "dst_port_index": p.get("dst_port_index"),
                                          "line_type": p.get("line_type", ""),
+                                         "declared": p.get("declared"),
                                          "verified": resolved.get(f'{i}:{j}'),
                                          "candidate": candidates.get(f'{i}:{j}'),
                                          "restored": restored.get(f'{i}:{j}'),
                                          "manual": manual.get(f'{i}:{j}')}
                                         for j, p in enumerate(c.get("interface_pairs", []))]}
                    for i, c in enumerate(data["connections"])]
-    return jsonify({"loaded": True, "revision": topology_revision, "filename": get_topo_filename(), "summary": data["summary"],
-                    "devices": devices, "connections": connections})
+    return jsonify({"loaded": True, "format": data.get('format', 'ensp'), "revision": topology_revision, "filename": get_topo_filename(), "summary": data["summary"],
+                    "devices": devices, "connections": connections, "runtime_error": runtime_error})
+
+
+@app.route('/api/eve/config', methods=['GET', 'POST'])
+def api_eve_config():
+    if not is_local_chat_request():
+        return jsonify({'error': 'EVE/PNET 设置仅允许本机页面访问'}), 403
+    try:
+        result = eve_service.settings() if request.method == 'GET' else eve_service.configure(request.get_json(silent=True))
+        response = jsonify(result)
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
 
 @app.route('/api/topo/interfaces-archive', methods=['GET', 'POST'])
@@ -547,33 +574,74 @@ def api_topo_verify_progress():
     return response
 
 
+def active_traffic_monitor():
+    topology = get_topo_data()
+    return eve_traffic_monitor if topology and topology.get('format') == 'eve-ng' else traffic_monitor
+
+
+@app.route('/api/eve/capture/config', methods=['GET', 'POST'])
+def api_eve_capture_config():
+    if not is_local_chat_request():
+        return jsonify({'error': '远程抓包设置仅允许本机页面访问'}), 403
+    try:
+        interfaces = eve_ssh.configure(request.get_json(silent=True)) if request.method == 'POST' else None
+        response = jsonify({'settings': eve_ssh.settings(), 'interfaces': interfaces})
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+
 @app.route("/api/traffic/interfaces")
 def api_traffic_interfaces():
     try:
-        return jsonify({"interfaces": list_interfaces()})
+        if active_traffic_monitor() is eve_traffic_monitor:
+            if not is_local_chat_request():
+                return jsonify({'error': '远程网卡仅允许本机页面访问'}), 403
+            return jsonify({'interfaces': eve_ssh.interfaces(), 'remote': True})
+        return jsonify({"interfaces": list_interfaces(), 'remote': False})
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         return jsonify({"error": str(exc)}), 500
 
 
 @app.route("/api/traffic/start", methods=["POST"])
 def api_traffic_start():
+    if not is_local_chat_request():
+        return jsonify({'error': '开始监控仅允许本机页面访问'}), 403
+    if not topology_resolve_lock.acquire(blocking=False):
+        return jsonify({'error': '拓扑正在操作，请稍后再试'}), 409
     try:
-        interface = str((request.get_json(silent=True) or {}).get('interface', ''))
-        count = traffic_monitor.start(interface, get_topo_data())
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            raise ValueError('监控请求格式无效')
+        monitor = active_traffic_monitor()
+        if monitor is eve_traffic_monitor and data.get('revision') != topology_revision:
+            raise ValueError('拓扑已更改，请刷新映射后重试')
+        selection = data.get('mappings') if monitor is eve_traffic_monitor else str(data.get('interface', ''))
+        topology = get_topo_data()
+        count = monitor.start(selection, topology)
+        if get_topo_data() is not topology:
+            monitor.stop()
+            raise ValueError('启动期间拓扑已更改，监控已停止，请重新映射')
         return jsonify({"success": True, "links": count})
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         return jsonify({"error": str(exc)}), 400
+    finally:
+        topology_resolve_lock.release()
 
 
 @app.route("/api/traffic/stop", methods=["POST"])
 def api_traffic_stop():
+    if not is_local_chat_request():
+        return jsonify({'error': '停止监控仅允许本机页面访问'}), 403
     traffic_monitor.stop()
+    eve_traffic_monitor.stop()
     return jsonify({"success": True})
 
 
 @app.route("/api/traffic/status")
 def api_traffic_status():
-    response = jsonify(traffic_monitor.status())
+    response = jsonify(active_traffic_monitor().status())
     response.headers['Cache-Control'] = 'no-store'
     return response
 
@@ -581,9 +649,9 @@ def api_traffic_status():
 @app.route("/api/traffic/packets", methods=["GET", "DELETE"])
 def api_traffic_packets():
     if request.method == "DELETE":
-        traffic_monitor.clear_packets()
+        active_traffic_monitor().clear_packets()
         return jsonify({"success": True})
-    response = jsonify({"packets": traffic_monitor.packet_snapshot()})
+    response = jsonify({"packets": active_traffic_monitor().packet_snapshot()})
     response.headers['Cache-Control'] = 'no-store'
     return response
 
@@ -596,7 +664,7 @@ def _start_mcp_sse():
 def run_server(host="0.0.0.0", port=5000):
     banner = f"""
 {'='*60}
-  Learn to eNSP
+  Learn to DataNetworking
   Web 界面: http://{host}:{port}
   MCP SSE:  http://{host}:5001/sse
 {'='*60}

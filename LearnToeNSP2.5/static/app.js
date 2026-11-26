@@ -6,8 +6,16 @@ let state = {
     openPorts: [],
     isScanning: false,
     scanIp: null,
-    topologyNames: {}
+    topologyNames: {},
+    endpointNames: {},
+    completionDevices: [],
+    completionLinks: [],
+    eveDevices: null,
+    deviceSource: 'topology'
 };
+let topologyFormat = null;
+let eveMappingGraph = null;
+let eveCaptureInterfaces = [];
 let currentTopologyRevision = null;
 let trafficRunning = false;
 let trafficBusy = false;
@@ -186,10 +194,10 @@ function exportChatConversation() {
     var messages = Array.from(document.querySelectorAll('#chatMessages .chat-message'));
     if (!messages.length) { status.textContent = '当前没有对话可导出'; return; }
     try {
-        var content = 'Learn to eNSP AI 对话\n导出时间：' + new Date().toLocaleString() + '\n\n' +
+        var content = 'Learn to DataNetworking AI 对话\n导出时间：' + new Date().toLocaleString() + '\n\n' +
             messages.map(function(node) { return node.textContent; }).join('\n\n');
         var url = URL.createObjectURL(new Blob(['\ufeff', content], {type: 'text/plain;charset=utf-8'}));
-        var link = document.createElement('a'); link.href = url; link.download = 'ensp-ai-对话.txt';
+        var link = document.createElement('a'); link.href = url; link.download = 'Learn-to-DataNetworking-AI对话.txt';
         document.body.appendChild(link); link.click(); link.remove();
         setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
         status.textContent = '对话已导出，文件可能包含设备信息';
@@ -320,6 +328,8 @@ function startScan() {
     }
 
     state.isScanning = true;
+    state.deviceSource = 'scan';
+    document.getElementById('deviceSource').value = 'scan';
     state.scanIp = ip;
     state.openPorts = [];
     var btn = document.getElementById("btnScan");
@@ -406,6 +416,23 @@ function scanFailed(msg) {
 function renderDeviceList() {
     var container = document.getElementById("deviceList");
     var count = document.getElementById("deviceCount");
+    if (state.eveDevices && state.deviceSource === 'topology') {
+        container.replaceChildren();
+        count.textContent = state.eveDevices.length;
+        state.eveDevices.forEach(function(device) {
+            var item = document.createElement('div'); item.className = 'device-item';
+            var label = document.createElement('span'); label.className = 'device-port';
+            var port = Number(device.com_port), host = device.console_host;
+            label.textContent = device.name + (port ? '（' + port + '）' : '（控制台不可用）');
+            label.title = host ? host + ':' + port : device.console_error || '请接入服务器并检查控制台类型';
+            var sessionId = Object.keys(state.sessions).find(function(id) { var s = state.sessions[id]; return s.ip === host && Number(s.port) === port; });
+            var button = document.createElement('button'); button.className = 'device-btn ' + (sessionId ? 'disconnect' : 'connect');
+            button.textContent = sessionId ? '断开' : '连接'; button.disabled = !host || !port;
+            button.onclick = function() { if (sessionId) disconnectSession(sessionId, port); else connectToDevice(port, host); };
+            item.append(label, button); container.appendChild(item);
+        });
+        return;
+    }
 
     if (state.openPorts.length === 0) {
         container.innerHTML = '<div class="empty-state">未发现开放端口</div>';
@@ -439,8 +466,8 @@ function renderDeviceList() {
     });
 }
 
-function connectToDevice(port) {
-    var ip = document.getElementById("scanIp").value.trim();
+function connectToDevice(port, host) {
+    var ip = host || document.getElementById("scanIp").value.trim();
     appendToSession(null, "[连接] 正在连接 " + ip + ":" + port + " ...", "info");
 
     fetch("/api/telnet/connect", {
@@ -455,7 +482,7 @@ function connectToDevice(port) {
             return;
         }
         createSessionTab(data.session_id, ip, port, data.initial_output);
-        state.connectedDevices[port] = data.session_id;
+        if (!host) state.connectedDevices[port] = data.session_id;
         renderDeviceList();
         switchToSession(data.session_id);
     })
@@ -463,6 +490,7 @@ function connectToDevice(port) {
 }
 
 function sessionLabel(ip, port) {
+    if (state.endpointNames[ip + ':' + port]) return state.endpointNames[ip + ':' + port] + '（' + port + '）';
     var local = ['127.0.0.1', 'localhost', '::1'].includes(String(ip).toLowerCase());
     var name = local ? state.topologyNames[Number(port)] : null;
     return name ? name + '（' + port + '）' : ip + ':' + port;
@@ -489,13 +517,8 @@ function createSessionTab(sessionId, ip, port, initialOutput) {
     var input = document.createElement("input");
     input.type = "text";
     input.className = "terminal-cmd";
-    input.placeholder = "输入命令后按回车发送...";
+    input.placeholder = "输入命令 · Tab 补全 · ↑↓候选/历史 · 回车发送";
     input.setAttribute("data-session", sessionId);
-    input.onkeydown = function(e) {
-        if (e.key === "Enter") {
-            handleTerminalKey(sessionId);
-        }
-    };
     inputBar.appendChild(input);
     panel.appendChild(inputBar);
 
@@ -509,6 +532,9 @@ function createSessionTab(sessionId, ip, port, initialOutput) {
         promptEl: prompt,
         panelEl: panel
     };
+    state.sessions[sessionId].completion = CommandCompletion.attach(input, function(history) {
+        return terminalCommandCatalog(ip, port, history);
+    }, function() { handleTerminalKey(sessionId); }, sessionId);
 
     if (initialOutput) {
         appendToSession(sessionId, initialOutput.trim(), "output");
@@ -638,6 +664,26 @@ function handleTerminalKey(sessionId) {
     .catch(function(e) { appendToSession(sessionId, "[错误] " + e.message, "error"); });
 }
 
+function terminalCommandCatalog(ip, port, history) {
+    var matches = state.completionDevices.filter(function(device) {
+        var host = device.console_host || '127.0.0.1';
+        var local = ['127.0.0.1', 'localhost', '::1'];
+        return Number(device.com_port) === Number(port) && (host === ip || local.includes(host) && local.includes(ip));
+    });
+    var device = matches.length === 1 ? matches[0] : null, interfaces = [];
+    if (device) state.completionLinks.forEach(function(link) {
+        var side = link.source_id === device.id ? 'source' : link.target_id === device.id ? 'target' : null;
+        if (!side) return;
+        link.interface_pairs.forEach(function(pair) {
+            ['manual', 'verified', 'restored', 'declared'].forEach(function(kind) {
+                var name = (pair[kind] || {})[side + '_interface'];
+                if (name && !interfaces.includes(name)) interfaces.push(name);
+            });
+        });
+    });
+    return CommandCompletion.catalog(device && device.model, interfaces, history);
+}
+
 function appendToSession(sessionId, text, type) {
     var target;
     if (sessionId && state.sessions[sessionId]) {
@@ -691,6 +737,60 @@ function clearActiveTerminal() {
     if (active && state.sessions[active]) {
         state.sessions[active].outputEl.innerHTML = "";
     }
+}
+
+function updateEveKind() {
+    var pnet = document.getElementById('eveKind').value === 'pnet';
+    ['eveLabGroup', 'eveUserGroup', 'evePasswordGroup'].forEach(function(id) { document.getElementById(id).hidden = pnet; });
+    document.getElementById('eveCookieGroup').hidden = !pnet;
+}
+
+async function saveEveSettings() {
+    var status = document.getElementById('eveStatus');
+    status.textContent = '正在认证并读取服务器…';
+    try {
+        var response = await fetch('/api/eve/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+            base_url: document.getElementById('eveBase').value, kind: document.getElementById('eveKind').value,
+            lab_path: document.getElementById('eveLab').value, username: document.getElementById('eveUser').value,
+            password: document.getElementById('evePassword').value, cookie: document.getElementById('eveCookie').value
+        })});
+        var data = await response.json();
+        if (!response.ok) throw new Error(data.error || '认证失败');
+        document.getElementById('evePassword').value = ''; document.getElementById('eveCookie').value = '';
+        status.textContent = '服务器认证成功';
+        await loadTopologyGraph();
+    } catch (error) { status.textContent = error.message; }
+}
+
+async function saveEveCaptureSettings() {
+    var status = document.getElementById('eveCaptureStatus');
+    status.textContent = '正在连接 SSH 并读取网卡…';
+    try {
+        var host = document.getElementById('eveSshHost').value.trim() || new URL(document.getElementById('eveBase').value).hostname;
+        var response = await fetch('/api/eve/capture/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+            host: host, port: Number(document.getElementById('eveSshPort').value), username: document.getElementById('eveSshUser').value,
+            password: document.getElementById('eveSshPassword').value, fingerprint: document.getElementById('eveSshFingerprint').value
+        })});
+        var data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'SSH 连接失败');
+        document.getElementById('eveSshPassword').value = '';
+        eveCaptureInterfaces = data.interfaces || [];
+        renderEveCaptureMappings();
+        status.textContent = 'SSH 已连接，读取到 ' + eveCaptureInterfaces.length + ' 个以太网接口；请在拓扑图下配置链路映射。';
+    } catch (error) { status.textContent = error.message; }
+}
+
+async function loadEveSettings() {
+    try {
+        var response = await fetch('/api/eve/config', {cache: 'no-store'});
+        if (!response.ok) return;
+        var data = await response.json();
+        if (data.base_url) document.getElementById('eveBase').value = data.base_url;
+        if (data.authenticated) document.getElementById('eveKind').value = data.kind;
+        document.getElementById('eveLab').value = data.lab_path || '';
+        document.getElementById('eveUser').value = data.username || '';
+        updateEveKind();
+    } catch (_) { /* Graph loading reports missing runtime configuration. */ }
 }
 
 function handleTopoUpload(event) {
@@ -757,10 +857,28 @@ function loadTopologyGraph(throwOnError) {
         renderTopologyGraph(data);
         if (!data.loaded) { resetTopologyDisplay(); if (throwOnError) throw new Error('拓扑已删除，请重新上传'); return; }
         currentTopologyRevision = data.revision;
+        state.completionDevices = data.devices || [];
+        state.completionLinks = data.connections || [];
+        var formatChanged = topologyFormat !== data.format;
+        topologyFormat = data.format;
+        eveMappingGraph = data.format === 'eve-ng' ? data : null;
+        document.getElementById('eveCaptureMappings').hidden = data.format !== 'eve-ng';
+        document.getElementById('trafficInterface').hidden = data.format === 'eve-ng';
+        if (formatChanged) {
+            state.deviceSource = 'topology';
+            document.getElementById('deviceSource').value = 'topology';
+            eveCaptureInterfaces = [];
+            loadTrafficInterfaces();
+        }
+        renderEveCaptureMappings();
+        state.eveDevices = data.format === 'eve-ng' ? data.devices.filter(function(d) { return d.category !== '网络'; }) : null;
+        state.endpointNames = {};
+        (data.devices || []).forEach(function(d) { if (d.console_host && Number(d.com_port)) state.endpointNames[d.console_host + ':' + d.com_port] = d.name; });
+        if (data.format === 'eve-ng') document.getElementById('eveStatus').textContent = data.runtime_error || '已从服务器读取控制台地址';
         state.topologyNames = {};
         var duplicatePorts = new Set();
         (data.devices || []).forEach(function(device) {
-            if (!/^\d+$/.test(String(device.com_port)) || !device.name) return;
+            if (data.format === 'eve-ng' || !/^\d+$/.test(String(device.com_port)) || !device.name) return;
             var port = Number(device.com_port);
             if (port < 1 || port > 65535 || duplicatePorts.has(port)) return;
             if (Object.prototype.hasOwnProperty.call(state.topologyNames, port)) {
@@ -770,7 +888,7 @@ function loadTopologyGraph(throwOnError) {
         renderDeviceList();
         renderTabs();
         document.getElementById("topoFilename").textContent = data.filename;
-        document.getElementById("topoStats").textContent = "设备: " + data.summary.total_devices + " | 链路: " + data.summary.total_connections + " | VLAN: " + data.summary.vlan_count + " | 子网: " + data.summary.subnet_count;
+        document.getElementById("topoStats").textContent = "设备: " + data.summary.total_devices + (data.summary.total_networks ? ' | 网络: ' + data.summary.total_networks : '') + " | 链路: " + data.summary.total_connections + " | VLAN: " + data.summary.vlan_count + " | 子网: " + data.summary.subnet_count;
         document.getElementById("topoStatus").textContent = "已加载";
         document.getElementById("topoStatus").classList.add("loaded");
         document.getElementById("topoInfo").style.display = "block";
@@ -782,6 +900,11 @@ function loadTopologyGraph(throwOnError) {
 
 function resetTopologyDisplay() {
     currentTopologyRevision = null;
+    topologyFormat = null;
+    eveMappingGraph = null;
+    document.getElementById('eveCaptureMappings').hidden = true;
+    document.getElementById('trafficInterface').hidden = false;
+    loadTrafficInterfaces();
     document.getElementById('interfaceArchiveStatus').textContent = '';
     stopTrace();
     traceSelection = null;
@@ -791,6 +914,10 @@ function resetTopologyDisplay() {
     traceEdges = {};
     renderPackets();
     state.topologyNames = {};
+    state.completionDevices = [];
+    state.completionLinks = [];
+    state.eveDevices = null;
+    state.endpointNames = {};
     renderDeviceList();
     renderTabs();
     document.getElementById('topoFilename').textContent = '';
@@ -850,7 +977,7 @@ async function exportTopologyInterfaces() {
     try {
         var data = await readTopologyArchive();
         var url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'}));
-        var link = document.createElement('a'); link.href = url; link.download = 'ensp-互联信息.json';
+        var link = document.createElement('a'); link.href = url; link.download = 'Learn-to-DataNetworking-互联信息.json';
         document.body.appendChild(link); link.click(); link.remove();
         setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
         status.textContent = '已导出 ' + data.links.length + ' 条链路记录，请妥善保存文件。';
@@ -875,6 +1002,8 @@ async function importTopologyInterfaces(event) {
 }
 
 async function connectTopologyDevices() {
+    state.deviceSource = 'topology';
+    document.getElementById('deviceSource').value = 'topology';
     var button = document.getElementById('topoConnectButton');
     var status = document.getElementById('topoConnectStatus');
     var log = document.getElementById('topoConnectLog');
@@ -891,7 +1020,7 @@ async function connectTopologyDevices() {
         data.devices.forEach(function(device) {
             if (!device.session_id) return;
             if (!state.sessions[device.session_id]) createSessionTab(device.session_id, device.ip || '127.0.0.1', device.port, '');
-            if (localList && state.scanIp && (!state.connectedDevices[device.port] || state.connectedDevices[device.port] === device.session_id)) {
+            if (!state.eveDevices && localList && state.scanIp && (!state.connectedDevices[device.port] || state.connectedDevices[device.port] === device.session_id)) {
                 state.connectedDevices[device.port] = device.session_id;
                 if (!state.openPorts.includes(device.port)) state.openPorts.push(device.port);
             }
@@ -901,6 +1030,7 @@ async function connectTopologyDevices() {
         status.textContent = data.devices.map(function(device) {
             return device.name + '（' + device.port + '）：' + device.status;
         }).join('\n');
+        loadTopologyGraph();
     } catch (error) { status.textContent = error.message + '；如已建立会话，可重新执行以复用会话。'; }
     finally { button.disabled = false; }
 }
@@ -1040,6 +1170,9 @@ function renderTopologyGraph(data) {
         } else if (isSwitch) {
             group.appendChild(make('rect', {x: -26, y: -16, width: 52, height: 32, rx: 4, class: 'device-outline switch-outline'}));
             group.appendChild(make('path', {d: 'M -17 -5 H 13 M 9 -9 L 13 -5 L 9 -1 M 17 6 H -13 M -9 2 L -13 6 L -9 10', class: 'device-mark switch-mark'}));
+        } else if (category === '网络') {
+            group.appendChild(make('ellipse', {cx: 0, cy: 0, rx: 28, ry: 18, class: 'device-outline'}));
+            var networkLabel = make('text', {x: 0, y: 5, class: 'graph-model'}); networkLabel.textContent = '网段'; group.appendChild(networkLabel);
         } else {
             group.appendChild(make('rect', {x: -22, y: -19, width: 44, height: 38, rx: 5, class: 'device-outline'}));
             var icon = make('text', {x: 0, y: 5, class: 'graph-model'}); icon.textContent = '设备'; group.appendChild(icon);
@@ -1048,7 +1181,8 @@ function renderTopologyGraph(data) {
         var model = make("text", { x: 0, y: 51, class: "graph-model" }); model.textContent = device.model || ""; group.appendChild(model);
         svg.appendChild(group);
     });
-    stats.textContent = devices.length + " 台设备 · " + count + " 条连线";
+    var networkCount = devices.filter(function(device) { return device.category === '网络'; }).length;
+    stats.textContent = (devices.length - networkCount) + ' 台设备' + (networkCount ? ' · ' + networkCount + ' 个网络' : '') + ' · ' + count + ' 条连线';
 }
 
 function renderConnections(devices, links, revision) {
@@ -1080,6 +1214,9 @@ function renderConnections(devices, links, revision) {
             } else if (pair.candidate && pair.candidate.source_interface && pair.candidate.target_interface) {
                 detail.textContent = pair.candidate.source_interface + ' ↔ ' + pair.candidate.target_interface + '（双向 LLDP 候选；其他设备身份未确认）' + (pair.line_type ? ' · ' + pair.line_type : '');
                 candidateItems.push(item);
+            } else if (pair.declared && (pair.declared.source_interface || pair.declared.target_interface)) {
+                detail.textContent = (pair.declared.source_interface || '网络') + ' ↔ ' + (pair.declared.target_interface || '网络') + '（拓扑文件声明，未经验证）';
+                pendingItems.push(item);
             } else {
                 detail.textContent = '待验证';
                 pendingItems.push(item);
@@ -1189,11 +1326,43 @@ function initTopologyInteraction() {
     svg.addEventListener('lostpointercapture', endDrag);
 }
 
+function renderEveCaptureMappings() {
+    var container = document.getElementById('eveMappingRows');
+    var old = {};
+    if (container.dataset.revision === String(currentTopologyRevision)) container.querySelectorAll('select').forEach(function(s) { old[s.dataset.linkId] = s.value; });
+    container.dataset.revision = String(currentTopologyRevision);
+    container.replaceChildren();
+    if (!eveMappingGraph) return;
+    var devices = {};
+    eveMappingGraph.devices.forEach(function(d) { devices[d.id] = d.name; });
+    eveMappingGraph.connections.forEach(function(link, i) {
+        link.interface_pairs.forEach(function(pair, j) {
+            var key = i + ':' + j, row = document.createElement('label');
+            row.className = 'eve-mapping-row';
+            var name = document.createElement('span');
+            var ports = pair.manual || pair.verified || pair.restored || pair.declared || {};
+            name.textContent = devices[link.source_id] + ' ' + (ports.source_interface || '') + ' ↔ ' + devices[link.target_id] + ' ' + (ports.target_interface || '');
+            var select = document.createElement('select'); select.dataset.linkId = key;
+            select.setAttribute('aria-label', name.textContent + ' 抓包网卡');
+            select.add(new Option('不监控此链路', ''));
+            eveCaptureInterfaces.forEach(function(item) { select.add(new Option(item.name, item.id)); });
+            if (old[key]) select.value = old[key];
+            row.append(name, select); container.appendChild(row);
+        });
+    });
+}
+
 async function loadTrafficInterfaces() {
     try {
         var response = await fetch('/api/traffic/interfaces', { cache: 'no-store' });
         var data = await response.json();
         if (!response.ok) throw new Error(data.error || '无法获取网卡');
+        if (data.remote) {
+            eveCaptureInterfaces = data.interfaces;
+            renderEveCaptureMappings();
+            document.getElementById('eveCaptureStatus').textContent = '已读取服务器网卡，请选择链路映射。';
+            return;
+        }
         var select = document.getElementById('trafficInterface');
         var previous = select.value;
         select.replaceChildren(new Option('选择抓包网卡', ''));
@@ -1214,11 +1383,13 @@ async function toggleTraffic() {
     try {
         var response = await fetch(trafficRunning ? '/api/traffic/stop' : '/api/traffic/start', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({interface: document.getElementById('trafficInterface').value})
+            body: JSON.stringify({interface: document.getElementById('trafficInterface').value, revision: currentTopologyRevision,
+                mappings: Array.from(document.querySelectorAll('#eveMappingRows select')).filter(function(s) { return s.value; }).map(function(s) { return {link_id: s.dataset.linkId, interface: s.value}; })})
         });
         var data = await response.json();
         if (!response.ok) throw new Error(data.error || '操作失败');
         if (!trafficRunning) {
+            if (topologyFormat === 'eve-ng') document.getElementById('eveCaptureMappings').open = false;
             traceSelection = null;
             packetData = [];
             stopTrace();
@@ -1284,7 +1455,7 @@ function renderPackets() {
                       packet.protocol, packet.source || packet.source_mac || '—', packet.destination || packet.destination_mac || '—',
                       packet.frame_length + ' B', packet.detail || '—'];
         values.forEach(function(value) { var cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell); });
-        row.title = '外层 UDP: ' + packet.outer_source + ':' + packet.outer_source_port + ' → ' + packet.outer_destination + ':' + packet.outer_destination_port + (packet.vlan !== undefined ? ' | VLAN ' + packet.vlan : '') + (packet.ttl !== undefined ? ' | TTL ' + packet.ttl : '');
+        row.title = (packet.capture_source === 'eve-ssh' ? '服务器抓包网卡：' + packet.capture_interface : '外层 UDP: ' + packet.outer_source + ':' + packet.outer_source_port + ' → ' + packet.outer_destination + ':' + packet.outer_destination_port) + (packet.vlan !== undefined ? ' | VLAN ' + packet.vlan : '') + (packet.ttl !== undefined ? ' | TTL ' + packet.ttl : '');
         rows.appendChild(row);
     });
 }
@@ -1296,7 +1467,7 @@ function showPacketAnalysis(packet) {
         return;
     }
     var lines = ['自动分析 · ' + packet.protocol + ' · ' + (packetLinks[packet.link_id] || packet.link_id),
-        '内层帧 ' + (packet.inner_length != null ? packet.inner_length + ' B' : '未知') + '；外层捕获帧 ' + packet.frame_length + ' B'];
+        (packet.capture_source === 'eve-ssh' ? '以太网帧 ' + packet.frame_length + ' B；服务器网卡 ' + packet.capture_interface : '内层帧 ' + (packet.inner_length != null ? packet.inner_length + ' B' : '未知') + '；外层捕获帧 ' + packet.frame_length + ' B')];
     if (packet.source_mac || packet.destination_mac) lines.push('MAC：' + (packet.source_mac || '—') + ' → ' + (packet.destination_mac || '—'));
     (packet.analysis || []).forEach(function(item) { lines.push('• ' + item); });
     (packet.warnings || []).forEach(function(item) { lines.push('注意：' + item); });
@@ -1315,7 +1486,7 @@ function replayTrace() {
     stopTrace();
     var status = document.getElementById('traceStatus');
     if (!traceSelection || !traceEdges[traceSelection.link_id] || !traceSelection.sender_id) {
-        status.textContent = '请选择本次监控捕获的数据包';
+        status.textContent = traceSelection && traceSelection.capture_source === 'eve-ssh' ? '已捕获服务器报文；无法确认发送端，暂不播放方向动画' : '请选择本次监控捕获的数据包';
         return;
     }
     var selected = traceSelection;
@@ -1413,7 +1584,7 @@ document.addEventListener("DOMContentLoaded", function() {
         if (next >= 0) { event.preventDefault(); switchSidebarTab(tabs[next], true); }
     });
     checkMcpStatus();
+    loadEveSettings();
     loadTopologyGraph();
-    loadTrafficInterfaces();
     pollTrafficStatus();
 });

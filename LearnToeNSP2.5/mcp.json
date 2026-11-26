@@ -1,12 +1,12 @@
 {
-  "comment": "两种方式启动 eNSP Manager MCP：",
+  "comment": "两种方式启动 Learn to DataNetworking MCP：",
   "comment_stdio": "方式1 - 纯 MCP stdio（给 Claude Desktop 等本地工具）：python mcp_server.py",
   "comment_sse": "方式2 - Web+MCP 一体启动（同时提供 Web 界面和远程 MCP）：python app.py，MCP SSE 端点 http://localhost:5001/sse",
   "mcpServers": {
-    "ensp-manager": {
+    "learn-to-datanetworking": {
       "command": "python",
       "args": ["mcp_server.py"],
-      "cwd": "E:\\Documents\\GitHub\\Studen-to-ensp-mcp\\ensp-managerr"
+      "cwd": "E:\\Documents\\GitHub\\Learn-to-ensp-mcp\\LearnToeNSP2.5"
     }
   }
 }

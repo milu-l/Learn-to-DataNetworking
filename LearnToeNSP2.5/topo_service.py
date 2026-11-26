@@ -21,13 +21,17 @@ def parse_topology(file_path):
 def parse_topology_from_content(content):
     try:
         return _parse_content(content)
-    except ET.ParseError:
-        raise RuntimeError("文件格式错误，无法解析为 eNSP 拓扑文件")
+    except (ET.ParseError, KeyError, ValueError) as exc:
+        raise RuntimeError(f"拓扑文件格式错误：{exc}") from exc
 
 
 def _parse_content(content):
     content = content.replace('encoding="UNICODE"', 'encoding="UTF-8"')
     root = ET.fromstring(content)
+    if root.tag == 'lab':
+        return parse_unl(root)
+    if root.tag != 'topo' or root.find('devices') is None:
+        raise ValueError('不支持的拓扑格式，请上传 eNSP 或 EVE-NG 拓扑')
 
     result = {
         "version": root.attrib.get("version", ""),
@@ -152,6 +156,84 @@ def _parse_content(content):
         "subnet_count": len(result["subnets"])
     }
 
+    return result
+
+
+def parse_unl(root):
+    """Read EVE-NG network membership without inventing console addresses."""
+    nodes, networks = root.find('./topology/nodes'), root.find('./topology/networks')
+    if nodes is None or networks is None:
+        raise ValueError('EVE-NG 拓扑缺少 nodes 或 networks')
+    result = {'format': 'eve-ng', 'lab_name': root.get('name', ''), 'version': root.get('version', ''), 'device_inventory': {},
+              'connections': [], 'vlans': [], 'subnets': [], 'servers': [], 'labels': [], 'summary': {}}
+    attachments = {}
+    for node in nodes.findall('node'):
+        node_id = node.get('id')
+        if not node_id or node_id in result['device_inventory']:
+            raise ValueError('EVE-NG 节点 ID 缺失或重复')
+        model = node.get('template') or node.get('type') or 'EVE-NG'
+        name = node.get('name') or f'节点 {node_id}'
+        normalized = model.lower()
+        if any(tag in normalized for tag in ('switch', 'huaweice', 'viosl2', 'iol-l2', 'nxos', 'cat9', 'veos')):
+            category = '交换机(三层)'
+        elif any(tag in normalized for tag in ('huawei', 'vios', 'csr', 'ios', 'router', 'vmx', 'vjunos', 'mikrotik')):
+            category = '路由器'
+        elif normalized == 'vpcs':
+            category = '终端PC'
+        else:
+            category = classify_device(model)
+        dev = {'id': node_id, 'name': name, 'model': model, 'category': category,
+               'mac': node.get('firstmac', ''), 'uuid': node.get('uuid', ''), 'com_port': '', 'interfaces': [], 'port_name_map': {},
+               'position': {'x': float(node.get('left') or 0), 'y': float(node.get('top') or 0)}}
+        result['device_inventory'][node_id] = dev
+        seen = set()
+        for iface in node.findall('interface'):
+            index = int(iface.attrib['id'])
+            if index < 0 or index in seen:
+                raise ValueError(f'{name} 的接口 ID 无效或重复')
+            seen.add(index)
+            if iface.get('name'):
+                dev['port_name_map'][index] = iface.get('name')
+            net_id = iface.get('network_id')
+            if net_id and net_id != '0':
+                attachments.setdefault(net_id, []).append((node_id, index, iface.get('name', '')))
+    network_ids = set()
+    for net in networks.findall('network'):
+        net_id = net.get('id')
+        if not net_id or net_id in network_ids:
+            raise ValueError('EVE-NG 网络 ID 缺失或重复')
+        network_ids.add(net_id)
+        members = attachments.get(net_id, [])
+        direct = net.get('type', '').lower() == 'bridge' and len(members) == 2 and members[0][0] != members[1][0] and net.get('visibility', '0') == '0'
+        if direct:
+            edges = [(members[0], members[1])]
+        elif members or net.get('visibility', '0') == '1' or net.get('type', '').lower().startswith('pnet'):
+            synthetic = 'eve-network:' + net_id
+            if synthetic in result['device_inventory']:
+                raise ValueError('网络节点 ID 冲突')
+            dev = {'id': synthetic, 'name': net.get('name') or f'网络 {net_id}', 'model': net.get('type', 'network'),
+                   'category': '网络', 'mac': '', 'com_port': '', 'interfaces': [], 'port_name_map': {},
+                   'position': {'x': float(net.get('left') or 0), 'y': float(net.get('top') or 0)}}
+            result['device_inventory'][synthetic] = dev
+            edges = [(member, (synthetic, i, '')) for i, member in enumerate(members)]
+        else:
+            edges = []
+        for a, b in edges:
+            pair = {'src_port_index': a[1], 'dst_port_index': b[1], 'line_type': 'EVE-NG ' + net.get('type', 'network'),
+                    'src_port_name': a[2] or '网络', 'dst_port_name': b[2] or '网络',
+                    'declared': {'source_interface': a[2], 'target_interface': b[2]}}
+            result['connections'].append({'source_id': a[0], 'target_id': b[0],
+                'source': result['device_inventory'][a[0]]['name'], 'target': result['device_inventory'][b[0]]['name'],
+                'aggregated': False, 'link_count': 1, 'interface_pairs': [pair]})
+    if set(attachments) - network_ids:
+        raise ValueError('接口引用了不存在的 EVE-NG 网络')
+    categories, models = {}, {}
+    for device in result['device_inventory'].values():
+        categories[device['category']] = categories.get(device['category'], 0) + 1
+        models[device['model']] = models.get(device['model'], 0) + 1
+    network_count = categories.get('网络', 0)
+    result['summary'] = {'total_devices': len(result['device_inventory']) - network_count, 'total_networks': network_count, 'total_connections': len(result['connections']),
+                         'aggregated_links': 0, 'by_category': categories, 'by_model': models, 'vlan_count': 0, 'subnet_count': 0}
     return result
 
 

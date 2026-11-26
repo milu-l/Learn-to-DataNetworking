@@ -537,6 +537,14 @@ body.resizing-chat { cursor: col-resize; user-select: none; }
 .traffic-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .traffic-controls select, .traffic-controls button { max-width: 230px; padding: 5px 8px; color: var(--text-primary); background: var(--bg-elevated); border: 1px solid var(--border-active); border-radius: 4px; font-size: 11px; }
 .traffic-controls button { cursor: pointer; }
+.eve-capture-mappings { padding: 10px 14px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-secondary); font-size: 12px; }
+.eve-capture-mappings p { line-height: 1.6; margin: 10px 0; }
+.eve-capture-mappings[open] { max-height: 180px; flex-shrink: 0; overflow-y: auto; }
+.eve-mapping-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 8px 0; }
+.eve-mapping-row span { flex: 1; min-width: 180px; }
+.eve-mapping-row select { max-width: 100%; min-width: 180px; }
+#eveSettings select, #deviceSource, .eve-capture-mappings select, .eve-capture-mappings button { padding: 6px 8px; color: var(--text-primary); background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px; }
+#eveSettings input, #eveSettings select { width: 100%; }
 #trafficStatus { color: var(--text-secondary); font-size: 11px; }
 .graph-node rect { fill: var(--bg-elevated); stroke: var(--accent-blue); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .graph-node text { text-anchor: middle; fill: var(--text-primary); font-size: 12px; }
@@ -716,6 +724,7 @@ body.resizing-chat { cursor: col-resize; user-select: none; }
 }
 
 .terminal-input-bar {
+    position: relative;
     display: flex;
     align-items: center;
     padding: 10px 16px;
@@ -741,6 +750,7 @@ body.resizing-chat { cursor: col-resize; user-select: none; }
 }
 
 .terminal-cmd {
+    min-width: 0;
     flex: 1;
     background: transparent;
     border: none;
@@ -754,6 +764,14 @@ body.resizing-chat { cursor: col-resize; user-select: none; }
 .terminal-cmd::placeholder {
     color: var(--text-dim);
 }
+
+.command-completion { position: absolute; bottom: calc(100% + 4px); left: 12px; right: 12px; z-index: 20; background: var(--bg-surface); border: 1px solid var(--border-active); border-radius: 6px; box-shadow: 0 4px 18px #0004; overflow: hidden; }
+.command-completion[hidden] { display: none; }
+.command-completion [role=listbox] { max-height: min(260px, 36vh); overflow-y: auto; }
+.command-completion-option { padding: 7px 10px; display: flex; justify-content: space-between; gap: 12px; cursor: pointer; font: 12px var(--font-mono); color: var(--text-primary); overflow-wrap: anywhere; }
+.command-completion-option[aria-selected=true] { background: var(--bg-input); color: var(--accent-green); outline: 1px solid var(--border-active); outline-offset: -1px; }
+.command-completion-option small { color: var(--text-secondary); font-size: 10px; flex-shrink: 0; }
+.command-completion-hint { padding: 7px 10px; border-top: 1px solid var(--border); font-size: 10px; color: var(--text-secondary); }
 
 ::-webkit-scrollbar {
     width: 6px;

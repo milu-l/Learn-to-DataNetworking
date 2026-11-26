@@ -192,6 +192,8 @@ class TrafficMonitor:
         self.packet_id = 0
 
     def start(self, interface, topology):
+        if topology and topology.get('format') == 'eve-ng':
+            raise ValueError('当前流量监控仅支持 eNSP VirtualBox 封装，不支持 EVE-NG 拓扑')
         if interface not in {item['id'] for item in list_interfaces()}:
             raise ValueError('请选择有效的抓包网卡')
         links = topology.get('connections', []) if topology else []

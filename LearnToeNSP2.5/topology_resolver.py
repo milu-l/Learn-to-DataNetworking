@@ -12,6 +12,8 @@ NEIGHBOR_COMMAND = 'display lldp neighbor brief'
 
 
 def skipped_device_type(device):
+    if device.get('category') == '网络':
+        return '网络'
     model = str(device.get('model', '')).strip().upper()
     if model == 'PC':
         return 'PC'
@@ -91,7 +93,8 @@ def verified_links(topology, observations):
     verified = {}
     for index, link in enumerate(topology.get('connections', [])):
         src, dst = link['source_id'], link['target_id']
-        if src == dst or src not in devices or dst not in devices or pair_counts[tuple(sorted((src, dst)))] != 1:
+        parallel = pair_counts[tuple(sorted((src, dst)))] != 1
+        if src == dst or src not in devices or dst not in devices or (parallel and topology.get('format') != 'eve-ng'):
             continue
         a, b = observations.get(src, {}), observations.get(dst, {})
         name_a, name_b = a.get('system_name'), b.get('system_name')
@@ -103,29 +106,44 @@ def verified_links(topology, observations):
             continue
         forward = [n for n in a.get('neighbors', []) if n['neighbor'].casefold() == name_b.casefold()]
         reverse = [n for n in b.get('neighbors', []) if n['neighbor'].casefold() == name_a.casefold()]
-        if len(forward) != 1 or len(reverse) != 1:
-            continue
-        f, r = forward[0], reverse[0]
-        if interface_key(f['local']) != interface_key(r['remote']) or interface_key(f['remote']) != interface_key(r['local']):
-            continue
-        src_name, dst_name = f['local'], r['local']
-        if not all(re.fullmatch(r'[A-Za-z][\w./:-]*\d[\w./:-]*', value) for value in (src_name, dst_name, f['remote'], r['remote'])):
-            continue
-        if src_name and dst_name:
-            verified[f'{index}:0'] = {'source_interface': src_name, 'target_interface': dst_name, 'source': '双向 LLDP'}
+        for pair_index, pair in enumerate(link.get('interface_pairs', [])):
+            matches_a, matches_b = forward, reverse
+            if parallel:
+                declared = pair.get('declared', {})
+                source_name, target_name = declared.get('source_interface'), declared.get('target_interface')
+                if not source_name or not target_name:
+                    continue
+                matches_a = [n for n in forward if interface_key(n['local']) == interface_key(source_name) and interface_key(n['remote']) == interface_key(target_name)]
+                matches_b = [n for n in reverse if interface_key(n['local']) == interface_key(target_name) and interface_key(n['remote']) == interface_key(source_name)]
+            if len(matches_a) != 1 or len(matches_b) != 1:
+                continue
+            f, r = matches_a[0], matches_b[0]
+            if interface_key(f['local']) != interface_key(r['remote']) or interface_key(f['remote']) != interface_key(r['local']):
+                continue
+            src_name, dst_name = f['local'], r['local']
+            if not all(re.fullmatch(r'[A-Za-z][\w./:-]*\d[\w./:-]*', value) for value in (src_name, dst_name, f['remote'], r['remote'])):
+                continue
+            if src_name and dst_name:
+                verified[f'{index}:{pair_index}'] = {'source_interface': src_name, 'target_interface': dst_name, 'source': '双向 LLDP'}
     return verified
 
 
 async def discover(topology, connect=True, verify=True, progress=None, on_update=None):
-    devices = list(topology.get('device_inventory', {}).values())
+    runtime = topology
+    if topology.get('format') == 'eve-ng':
+        from eve_service import eve_service
+        runtime = await asyncio.to_thread(eve_service.bind, topology)
+    devices = list(runtime.get('device_inventory', {}).values())
     if not devices:
         raise ValueError('请先上传包含设备的拓扑')
-    if len(devices) > 32:
+    if sum(device.get('category') != '网络' for device in devices) > 32:
         raise ValueError('一次最多处理 32 台设备，请缩小拓扑范围')
     def normalized_port(device):
         value = str(device.get('com_port', ''))
         return int(value) if value.isdigit() and 1 <= int(value) <= 65535 else None
-    ports = Counter(normalized_port(device) for device in devices if not skipped_device_type(device))
+    def host(device):
+        return device.get('console_host') or '127.0.0.1'
+    ports = Counter((host(device), normalized_port(device)) for device in devices if not skipped_device_type(device))
     names = Counter(str(device.get('name', '')).casefold() for device in devices if not skipped_device_type(device))
     semaphore = asyncio.Semaphore(4)
     observations, results = {}, []
@@ -145,24 +163,28 @@ async def discover(topology, connect=True, verify=True, progress=None, on_update
                     record['status'] = f'{skipped} 设备已跳过'
                     return
                 port = normalized_port(device)
-                if port is None or ports[port] != 1:
+                address = host(device)
+                if port is None or ports[(address, port)] != 1:
                     record['status'] = '端口无效或重复，已跳过'
                     return
-                session = next((found for host in ('127.0.0.1', 'localhost', '::1')
-                                if (found := session_manager.get_session_by_port(host, port))), None)
+                hosts = ('127.0.0.1', 'localhost', '::1') if address == '127.0.0.1' else (address,)
+                session = next((found for ip in hosts if (found := session_manager.get_session_by_port(ip, port))), None)
                 try:
                     if not session:
                         if not connect:
                             record['status'] = '未连接；请先在设备列表一键连接'
                             return
-                        result = await invoke('connect_device', {'ip': '127.0.0.1', 'port': port})
-                        session = session_manager.get_session_by_port('127.0.0.1', port)
+                        result = await invoke('connect_device', {'ip': address, 'port': port})
+                        session = session_manager.get_session_by_port(address, port)
                         if not session or not result.startswith('连接成功'):
                             record['status'] = '连接失败'
                             return
-                    session_ip = session.get('ip', '127.0.0.1')
+                    session_ip = session.get('ip', address)
                     record.update(status='已连接', session_id=session['session_id'], port=port, ip=session_ip)
                     if not verify:
+                        return
+                    if topology.get('format') == 'eve-ng' and not device.get('model', '').lower().startswith('huawei'):
+                        record['status'] += '；非华为设备请通过 AI 或终端使用对应厂商命令验证'
                         return
                     device_name = device.get('name', '')
                     if not isinstance(device_name, str) or names[str(device_name).casefold()] != 1:
